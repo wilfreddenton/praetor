@@ -1,64 +1,30 @@
-//! `escapement-bus` binary: serves the [`Broker`](escapement_bus::Broker) router over HTTPS.
+//! The bus: routes signed messages between agents, buffers for offline ones.
 //!
-//! TLS is terminated per-connection with `tokio-rustls`, then the stream is
-//! handed to `hyper-util`'s connection server driving the axum router — the
-//! canonical way to serve axum over rustls without the `axum-server` wrapper.
+//! Plain HTTP on loopback. There is deliberately no TLS: the traffic never
+//! leaves the machine, and authenticity comes from Ed25519 signatures on the
+//! messages — which, unlike TLS, survive passing through an untrusted bus. That
+//! choice is also what keeps `ring` (and all C) out of the dependency tree.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use anyhow::Context;
-use axum::extract::Request;
+use anyhow::Result;
 use clap::Parser;
 use escapement::bus::Broker;
-use hyper::body::Incoming;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use hyper_util::server::conn::auto::Builder;
-use rcgen::{CertifiedKey, generate_simple_self_signed};
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::ServerConfig;
-use tokio_rustls::rustls::pki_types::pem::PemObject;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tower_service::Service;
 
 #[derive(Parser)]
-#[command(about = "escapement message broker: per-recipient long-poll queue over HTTPS")]
+#[command(about = "Message broker for Claude Code agents")]
 struct Args {
-    /// Address to listen on.
-    #[arg(long, env = "ESC_ADDR", default_value = "127.0.0.1:9443")]
+    /// Address to listen on. Loopback unless you really mean otherwise.
+    #[arg(long, env = "ESC_ADDR", default_value = "127.0.0.1:9440")]
     addr: SocketAddr,
-    /// Directory holding cert.pem/key.pem/ca.pem (generated on first run).
-    #[arg(long, env = "ESC_CERT_DIR", default_value = "certs")]
-    cert_dir: PathBuf,
-}
-
-/// Load an existing localhost cert/key, or mint a self-signed pair. The cert is
-/// also written as `ca.pem` for clients to trust.
-fn ensure_cert(dir: &Path) -> anyhow::Result<(String, String)> {
-    std::fs::create_dir_all(dir).context("create cert dir")?;
-    let cert_path = dir.join("cert.pem");
-    let key_path = dir.join("key.pem");
-    if cert_path.exists() && key_path.exists() {
-        return Ok((
-            std::fs::read_to_string(&cert_path)?,
-            std::fs::read_to_string(&key_path)?,
-        ));
-    }
-    let CertifiedKey { cert, signing_key } =
-        generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])?;
-    let cert_pem = cert.pem();
-    let key_pem = signing_key.serialize_pem();
-    std::fs::write(&cert_path, &cert_pem)?;
-    std::fs::write(&key_path, &key_pem)?;
-    std::fs::write(dir.join("ca.pem"), &cert_pem)?;
-    tracing::info!(dir = %dir.display(), "generated self-signed cert");
-    Ok((cert_pem, key_pem))
+    /// Per-recipient queue cap. When full, the oldest message is dropped.
+    #[arg(long, env = "ESC_QUEUE_CAP", default_value_t = 1024)]
+    queue_cap: usize,
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -66,54 +32,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    tokio_rustls::rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
-
     let args = Args::parse();
-    let (cert_pem, key_pem) = ensure_cert(&args.cert_dir)?;
 
-    let certs = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
-        .collect::<Result<Vec<_>, _>>()
-        .context("parse certificate")?;
-    let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).context("parse private key")?;
-    let mut server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
-
-    let app = Broker::new().router();
-    let listener = TcpListener::bind(args.addr).await?;
-    tracing::info!("escapement-bus listening on https://{}", args.addr);
-
-    loop {
-        let (tcp, peer) = match listener.accept().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("accept error: {e}");
-                continue;
-            }
-        };
-        let acceptor = acceptor.clone();
-        let app = app.clone();
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(tcp).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::debug!("tls handshake failed from {peer}: {e}");
-                    return;
-                }
-            };
-            let io = TokioIo::new(tls_stream);
-            let service =
-                hyper::service::service_fn(move |req: Request<Incoming>| app.clone().call(req));
-            if let Err(e) = Builder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(io, service)
-                .await
-            {
-                tracing::debug!("connection error from {peer}: {e}");
-            }
-        });
+    // The bus has no authentication of its own: anything that can reach the
+    // port may enqueue. Signatures make forgery impossible, but a non-loopback
+    // bind still widens the surface for denial of service, so say so out loud.
+    if !args.addr.ip().is_loopback() {
+        tracing::warn!(
+            addr = %args.addr,
+            "bus is not bound to loopback; any host reaching this port can enqueue"
+        );
     }
+
+    let app = Broker::new(args.queue_cap).router();
+    let listener = TcpListener::bind(args.addr).await?;
+    tracing::info!(addr = %args.addr, cap = args.queue_cap, "bus listening");
+    axum::serve(listener, app).await?;
+    Ok(())
 }

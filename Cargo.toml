@@ -1,33 +1,26 @@
 [package]
+# NOTE: placeholder name. The escapement (Stop-hook) design was superseded by
+# Claude Code channels; this crate is now the bus + per-agent channel server.
+# Rename once, at the end.
 name = "escapement"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/wilfreddenton/escapement"
-description = "A durable, self-re-arming event listener for Claude Code agents — no more lost wakeups"
-keywords = ["claude-code", "mcp", "agents", "ai", "hook"]
+description = "Agent-to-agent messaging for Claude Code, over channels"
+keywords = ["claude-code", "mcp", "agents", "ai", "channel"]
 categories = ["command-line-utilities", "asynchronous"]
 readme = "README.md"
 
+# Pure Rust, no C dependencies — enforced in CI.
+# TLS is deliberately absent: the bus binds 127.0.0.1, and authenticity comes
+# from Ed25519 message signatures rather than from the transport. That is also
+# what keeps the tree free of `ring`, and therefore trivially cross-compilable.
+
 [features]
-# The Stop hook is the primitive, and the lightest piece — a sensible default.
-default = ["hook"]
-hook = ["dep:reqwest", "reqwest/blocking", "dep:rustls", "dep:clap"]
-bus = [
-    "dep:axum",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:tower-service",
-    "dep:tokio-rustls",
-    "dep:rcgen",
-    "dep:dashmap",
-    "dep:tokio",
-    "dep:tracing",
-    "dep:tracing-subscriber",
-    "dep:clap",
-]
-mcp = ["dep:rmcp", "dep:schemars", "dep:reqwest", "dep:rustls", "dep:tokio", "dep:clap"]
-full = ["hook", "bus", "mcp"]
+default = ["bus", "identity"]
+bus = ["dep:axum", "dep:hyper", "dep:hyper-util", "dep:tower-service", "dep:dashmap", "dep:tokio", "dep:tracing", "dep:tracing-subscriber", "dep:clap"]
+identity = ["dep:ed25519-dalek", "dep:getrandom", "dep:base64", "dep:clap"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -40,18 +33,16 @@ tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 axum = { version = "0.8", optional = true }
-hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
+hyper = { version = "1", features = ["server", "http1"], optional = true }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"], optional = true }
 tower-service = { version = "0.3", optional = true }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"], optional = true }
-rcgen = { version = "0.14", optional = true }
 dashmap = { version = "6", optional = true }
 
-reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
-
-rmcp = { version = "2", features = ["server", "transport-io", "macros"], optional = true }
-schemars = { version = "1", optional = true }
+# defaults are ["fast", "zeroize"]; keys are seeded from getrandom rather than
+# enabling the rand_core feature, which keeps RNG trait versions out of it.
+ed25519-dalek = { version = "3", optional = true }
+getrandom = { version = "0.3", optional = true }
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -62,12 +53,11 @@ path = "src/bin/escapement-bus.rs"
 required-features = ["bus"]
 
 [[bin]]
-name = "escapement-hook"
-path = "src/bin/escapement-hook.rs"
-required-features = ["hook"]
+name = "escapement-keygen"
+path = "src/bin/escapement-keygen.rs"
+required-features = ["identity"]
 
-# The flagship demo: two agents conversing. Never published as its own crate.
-[[bin]]
-name = "duet"
-path = "src/bin/duet.rs"
-required-features = ["mcp"]
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

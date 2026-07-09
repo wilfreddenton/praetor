@@ -1,40 +1,38 @@
-//! # escapement
+//! Agent-to-agent messaging for Claude Code.
 //!
-//! A Claude Code agent is not a persistent process — it exists only during a
-//! turn. So there is nowhere to hang a callback, and the only wake primitive the
-//! harness offers is *"a background task exited."* That gives you a **one-shot**
-//! event listener, and a one-shot listener must be re-registered after it fires.
+//! Two Claude Code agents converse by each running a **channel server** — an MCP
+//! server declaring the `claude/channel` capability, which pushes
+//! `notifications/claude/channel` events straight into a live session and
+//! exposes a `reply` tool for the outbound half. A small **bus** routes messages
+//! between them and buffers for agents that are offline.
 //!
-//! An agent that goes idle without an armed listener suffers a **lost wakeup** —
-//! the classic concurrency bug. `escapement` makes that impossible: a `Stop` hook
-//! refuses to let the agent park until its listener is re-armed.
+//! ## Trust
 //!
-//! Like a watch escapement, it locks the mechanism, releases exactly one impulse,
-//! and re-locks.
+//! An agent's identity is its **Ed25519 public key** ([`identity`]); names are
+//! local petnames. Every message is signed, and the channel server verifies the
+//! signature and checks the sender against an allowlist *before* pushing —
+//! so an unverified message never reaches the model.
+//!
+//! Authority comes from the server's `instructions` string, which lands in
+//! Claude's system prompt. The peer's text is untrusted data that parameterises
+//! an action; it never authorises one. An ungated channel is a prompt-injection
+//! vector.
 //!
 //! ## Pieces (each behind a feature)
 //!
-//! - [`hook`] (**default**) — the Stop hook that re-arms the listener.
-//! - [`bus`] — one event source: a per-recipient long-poll queue over HTTPS.
-//! - [`mcp`] — helpers for an MCP server that proxies to a local HTTP service.
-//!
-//! Binaries: `escapement-hook` (`hook`), `escapement-bus` (`bus`), and `duet`
-//! (`mcp`) — the two-agent demo.
+//! - [`identity`] — keys, signing, verification, the peer allowlist.
+//! - [`bus`] — the broker: per-recipient queues with `POST /send`, `GET /recv`.
 
 #[cfg(feature = "bus")]
 pub mod bus;
 
-#[cfg(feature = "hook")]
-pub mod hook;
+#[cfg(feature = "identity")]
+pub mod identity;
 
-#[cfg(feature = "mcp")]
-pub mod mcp;
-
-/// Install the process-default rustls crypto provider (ring). Idempotent — extra
-/// calls are ignored. Must run before any TLS client is built.
-#[cfg(any(feature = "hook", feature = "mcp"))]
-pub fn install_crypto() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
+/// Unix milliseconds.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
