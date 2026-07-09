@@ -3,20 +3,14 @@
 //! An MCP server built on [`rmcp`](https://docs.rs/rmcp) usually needs the same
 //! three things before it can define tools: install a rustls crypto provider,
 //! build an HTTP client that trusts a private CA, and forward calls to a
-//! backend. [`BusClient`] bundles those so the server crate is just its tools.
+//! backend. [`BusClient`] bundles those so the server is just its tools.
 
 use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-/// Install the process-default rustls crypto provider (ring). Idempotent — safe
-/// to call more than once; extra calls are ignored.
-pub fn install_crypto() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
-}
+use crate::install_crypto;
 
 /// Build a `reqwest` client that trusts the PEM CA at `ca_path` (and only that
 /// CA — no bundled roots), for talking to a self-signed local service.
@@ -28,7 +22,7 @@ pub fn http_client_with_ca(ca_path: &Path) -> anyhow::Result<reqwest::Client> {
         .build()?)
 }
 
-/// A thin async client for a `duet-bus` broker.
+/// A thin async client for a `escapement-bus` broker.
 #[derive(Clone)]
 pub struct BusClient {
     http: reqwest::Client,

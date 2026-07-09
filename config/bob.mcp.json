@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "duet": {
-      "command": "/home/wilfred/Documents/Datasphere/target/release/duet-chat",
+      "command": "/home/wilfred/Documents/Datasphere/target/release/duet",
       "env": {
-        "DUET_SELF": "bob",
-        "DUET_URL": "https://localhost:9443",
-        "DUET_CA": "/home/wilfred/Documents/Datasphere/certs/ca.pem"
+        "ESC_SELF": "bob",
+        "ESC_URL": "https://localhost:9443",
+        "ESC_CA": "/home/wilfred/Documents/Datasphere/certs/ca.pem"
       }
     }
   }

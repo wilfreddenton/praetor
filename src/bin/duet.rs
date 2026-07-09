@@ -1,12 +1,12 @@
-//! `duet-chat`: the concrete MCP server an instance of Claude Code runs.
+//! `duet`: the concrete MCP server an instance of Claude Code runs.
 //!
-//! It exposes two tools over stdio and forwards them to a `duet-bus` broker via
+//! It exposes two tools over stdio and forwards them to a `escapement-bus` broker via
 //! [`BusClient`]. Sending goes through this server; *receiving* does not — a
-//! background long-poll (kept alive by the `duet-liveness` Stop hook) delivers
+//! background long-poll (kept alive by the `escapement-hook` Stop hook) delivers
 //! incoming messages, because only a background shell task can wake Claude.
 
 use clap::Parser;
-use duet_mcp::BusClient;
+use escapement::mcp::BusClient;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
@@ -19,11 +19,11 @@ use serde_json::json;
 #[derive(Parser)]
 struct Config {
     /// This instance's id on the bus (the `from` on sends, the queue it reads).
-    #[arg(long = "self", env = "DUET_SELF")]
+    #[arg(long = "self", env = "ESC_SELF")]
     me: String,
-    #[arg(long, env = "DUET_URL", default_value = "https://localhost:9443")]
+    #[arg(long, env = "ESC_URL", default_value = "https://localhost:9443")]
     url: String,
-    #[arg(long, env = "DUET_CA")]
+    #[arg(long, env = "ESC_CA")]
     ca: String,
 }
 

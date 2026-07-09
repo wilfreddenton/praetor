@@ -1,4 +1,4 @@
-//! `duet-bus` binary: serves the [`Broker`](duet_bus::Broker) router over HTTPS.
+//! `escapement-bus` binary: serves the [`Broker`](escapement_bus::Broker) router over HTTPS.
 //!
 //! TLS is terminated per-connection with `tokio-rustls`, then the stream is
 //! handed to `hyper-util`'s connection server driving the axum router — the
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::extract::Request;
 use clap::Parser;
-use duet_bus::Broker;
+use escapement::bus::Broker;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
@@ -24,13 +24,13 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tower_service::Service;
 
 #[derive(Parser)]
-#[command(about = "duet message broker: per-recipient long-poll queue over HTTPS")]
+#[command(about = "escapement message broker: per-recipient long-poll queue over HTTPS")]
 struct Args {
     /// Address to listen on.
-    #[arg(long, env = "DUET_ADDR", default_value = "127.0.0.1:9443")]
+    #[arg(long, env = "ESC_ADDR", default_value = "127.0.0.1:9443")]
     addr: SocketAddr,
     /// Directory holding cert.pem/key.pem/ca.pem (generated on first run).
-    #[arg(long, env = "DUET_CERT_DIR", default_value = "certs")]
+    #[arg(long, env = "ESC_CERT_DIR", default_value = "certs")]
     cert_dir: PathBuf,
 }
 
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "duet_bus=info".into()),
+                .unwrap_or_else(|_| "escapement=info".into()),
         )
         .init();
 
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Broker::new().router();
     let listener = TcpListener::bind(args.addr).await?;
-    tracing::info!("duet-bus listening on https://{}", args.addr);
+    tracing::info!("escapement-bus listening on https://{}", args.addr);
 
     loop {
         let (tcp, peer) = match listener.accept().await {

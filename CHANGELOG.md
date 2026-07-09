@@ -6,11 +6,18 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `duet-bus`: async per-recipient long-poll message queue over HTTPS
-  (`/send`, `/recv`, `/armed`), served with `tokio-rustls` + `hyper-util`.
-- `duet-liveness`: Claude Code `Stop` hook that keeps a background listener
-  armed across turns.
-- `duet-mcp`: helpers (`BusClient`, crypto install, CA-trusting client) for
-  MCP-server-to-HTTP-backend bridges.
-- `duet-chat`: MCP server exposing `send_message` / `poll_messages`.
-- Drop-in `.mcp.json` and `Stop`-hook settings for two instances.
+- `escapement::hook` — the primitive: a Claude Code `Stop` hook that refuses to
+  let an agent park while its event listener is unarmed, preventing lost wakeups.
+  Bounded (blocks only while disarmed) and fails open (a dead bus can't trap the
+  agent). Binary: `escapement-hook`.
+- `escapement::bus` — one event source: an async per-recipient long-poll queue
+  over HTTPS (`/send`, `/recv`, `/armed`), served with `tokio-rustls` +
+  `hyper-util` driving an axum `Router`. Binary: `escapement-bus`.
+- `escapement::mcp` — helpers (`BusClient`, CA-trusting client) for an MCP server
+  that proxies to a local HTTP service.
+- `duet` — the flagship demo: two Claude Code agents conversing with no human
+  relaying messages. Ships as a binary, never as a published crate.
+- Drop-in `.mcp.json` and `Stop`-hook settings for two agents, plus
+  `scripts/demo.sh` for a full round trip without Claude.
+- CI checks the whole feature powerset (`cargo hack`), so a `#[cfg(feature)]` typo
+  can't pass locally and break for a user.

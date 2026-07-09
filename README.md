@@ -1,100 +1,133 @@
-# duet
+# escapement
 
-[![CI](https://github.com/wilfreddenton/duet/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/duet/actions/workflows/ci.yml)
+[![CI](https://github.com/wilfreddenton/escapement/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/escapement/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-**Let two Claude Code agents hold a conversation — no human relaying messages by hand.**
+**A durable, self-re-arming event listener for Claude Code agents.**
 
-`duet` is a small Rust workspace that bridges two (or more) Claude Code instances
-over a local message bus. One agent sends with an MCP tool; each agent receives
-through a background long-poll that a **Stop hook keeps alive across turns**. The
-interesting part isn't the bus — it's the harness-aware liveness trick that lets
-an agent stay reactive to external events without a human in the loop.
+An agent that goes idle without an armed listener suffers a **lost wakeup**.
+`escapement` makes that impossible.
+
+## The problem
+
+A Claude Code agent is not a persistent process. It exists only during a turn,
+then parks. So there is nowhere to hang a callback, and the harness offers
+exactly one wake primitive:
+
+> **An agent is re-invoked when a background shell task *exits*.**
+
+That gives you a **one-shot** event listener — the equivalent of
+`addEventListener(…, { once: true })`. And a one-shot listener must be
+re-registered after every event. Which means the two obvious designs both fail:
+
+- **Poll inside the turn** → never yields. Burns tokens, never returns to idle.
+- **An eternal `while true` background listener** → never *exits*, so it never
+  wakes anyone. Events pile up unread.
+
+And the subtle one: if the agent parks *without* re-registering, the next event
+is silently missed. That's a **lost wakeup** — the classic concurrency bug that
+condition variables exist to prevent.
+
+## The mechanism
 
 ```
- Claude Code  ──MCP (JSON-RPC / stdio)──►  duet-chat  ──HTTPS──►  duet-bus
-   (client)                                 (server)               (queue)
-                                            (HTTP client) ────────►
+        ┌──── agent parks (idle) ────┐
+        │                            │
+   Stop hook: armed?            listener blocks on /recv
+   ├─ yes → allow park               │
+   └─ no  → BLOCK, re-arm       event arrives → listener EXITS
+        ▲                            │
+        └──── agent wakes, handles ──┘
 ```
 
-## The problem it solves
+1. The agent arms a listener: a background task that blocks until an event
+   arrives, then **exits** — and *that exit is the wake*.
+2. It handles the event and re-arms.
+3. A **`Stop` hook** refuses to let the agent park while unarmed. Liveness lives
+   in the harness, never in the model's memory.
 
-Two Claude Code sessions can't address each other. If you want them to
-collaborate, you end up copy-pasting messages between two terminals. You'd think
-you could just have each one "listen" in a loop — but the Claude Code harness has
-a hard constraint that breaks the obvious approaches:
+Like a watch escapement: it locks the train, releases exactly one impulse, and
+re-locks.
 
-> **An agent is only re-invoked when a *background shell task exits*.**
-> The model itself doesn't run a loop; it acts on a turn and then goes idle.
+The hook is **bounded** (it blocks only while disarmed, so it can't loop forever)
+and **fails open** (an unreachable bus allows the park, so a dead bus can never
+trap the agent). Events are queued per-recipient, so a missed re-arm *delays*
+delivery — it never loses it.
 
-So a naive design fails in two ways:
+## Install
 
-- **A tight in-turn poll** never yields — it burns tokens and never goes idle.
-- **An eternal `while true` background listener** never *exits*, so it never wakes
-  the agent. Messages pile into a file no one reads.
-
-## The insight
-
-Receiving has to be a **relaunch loop**, and liveness must live in the harness,
-not in the model's memory:
-
-1. The agent runs a background long-poll: `curl .../recv?me=alice` — it blocks
-   until a message arrives, then **exits**, which wakes the agent.
-2. The agent handles the message, replies via the MCP `send_message` tool, and
-   relaunches the same long-poll.
-3. A **`Stop` hook** ([`duet-liveness`](crates/duet-liveness)) refuses to let the
-   agent go idle unless a listener is currently armed on the bus. That's what
-   makes the loop durable — it never depends on the model *remembering* to
-   relaunch. It's bounded (only blocks while disarmed) and fails open (a down bus
-   never traps the model).
-
-Durability lives in the bus: payloads are queued per-recipient, so a missed
-relaunch only *delays* delivery — it never drops a message.
-
-## Crates
-
-| Crate | Reusable? | Role |
-|---|---|---|
-| [`duet-bus`](crates/duet-bus) | ✅ generic | Async per-recipient long-poll queue over HTTPS. Payloads are opaque JSON. `POST /send`, `GET /recv`, `GET /armed`. Lib + binary. |
-| [`duet-liveness`](crates/duet-liveness) | ✅ generic | The `Stop` hook. Keeps *any* background listener armed across turns — not tied to this bus. |
-| [`duet-mcp`](crates/duet-mcp) | ✅ generic | Helpers for the "MCP tool that proxies to a local HTTP service" pattern: crypto-provider install, CA-trusting client, `BusClient`. |
-| [`duet-chat`](crates/duet-chat) | the instance | The concrete MCP server: `send_message` / `poll_messages` tools + the `{from, text}` message shape. ~120 lines on top of the crates above. |
-
-The split is deliberate: `duet-chat` is a thin *instance* of a general pattern.
-Swap it for your own tools and payload and you have a different bridge.
-
-## Quickstart
+One crate, feature-gated. You only compile what you use.
 
 ```bash
-cargo build --release          # builds all four binaries into target/release
-
-# 1. start the shared bus (generates certs/ on first run)
-./target/release/duet-bus
-
-# 2. wire up each instance — for "alice":
-cp config/alice.mcp.json       <alice project>/.mcp.json
-#   merge config/settings.alice.json into <alice project>/.claude/settings.json
-# ...and the same with the "bob" files for the other instance.
+cargo install escapement                      # the hook (default)
+cargo install escapement --features full      # hook + bus + the demo
 ```
 
-Restart both Claude Code instances. Tell each one once: *"launch the background
-message listener."* After that the Stop hook keeps it armed. Then ask alice to
-`send_message` to bob — and watch bob react on its own.
+| Feature | Provides | Binary |
+|---|---|---|
+| `hook` *(default)* | the Stop hook — **the primitive** | `escapement-hook` |
+| `bus` | one event source: a per-recipient long-poll queue over HTTPS | `escapement-bus` |
+| `mcp` | helpers for an MCP server that proxies to a local HTTP service | `duet` |
+| `full` | all of the above | — |
 
-See [`config/`](config) for the drop-in files and the exact `DUET_*` env vars.
+Features are additive and dependencies are gated: `escapement` with only `hook`
+pulls **18** transitive deps; with everything, 442. As a library:
+
+```rust
+use escapement::hook::{check_armed, block_decision, default_listen_cmd};
+```
+
+## The demo: two agents in conversation
+
+`duet` is the flagship example — two Claude Code instances talking with no human
+relaying messages. Agent *alice* sends via an MCP tool; agent *bob* is woken by
+his armed listener, replies, and re-arms.
+
+```bash
+cargo build --release --features full
+./target/release/escapement-bus       # the event source (generates certs/ on first run)
+./scripts/demo.sh                     # full round trip, no Claude required
+```
+
+To wire up real instances, copy `config/alice.mcp.json` → `<alice>/.mcp.json` and
+merge `config/settings.alice.json` into `<alice>/.claude/settings.json` (same for
+`bob`), then restart both. Tell each once: *"arm your listener."* The Stop hook
+keeps it armed forever after.
+
+The bus is just *one* event source. The same primitive wakes an agent on a
+webhook, a CI result, a queue message, or a file change.
+
+## Related work
+
+`escapement` is often mistaken for things it isn't:
+
+| | What it does | Cross-agent? |
+|---|---|---|
+| **`/goal`** | keeps *one* session looping until a condition holds | no |
+| **`/loop`** | re-runs a prompt on a time interval | no |
+| **Subagents** | spawns children *inside* one session | no |
+| **Agent Teams** | coordinates agents within one conversation | no |
+| **`escapement`** | makes an agent **reactive to external events** | yes |
+
+The nearest prior art isn't in the agent world at all — it's **systemd socket
+activation** (a supervisor holds the armed socket, wakes an inactive service on
+an event, and re-arms), and **Rust's own `Waker`** (a parked task registers a
+waker; parking without one is a lost wakeup). `escapement` is that discipline,
+applied to an agent.
 
 ## Design
 
-The full walkthrough — the harness execution model, why a barrier vs. relaunch,
-the arming race, and the failure modes — is in [`DESIGN.md`](DESIGN.md).
+The full walkthrough — execution model, rejected designs, the arming signal, and
+failure modes — is in [`DESIGN.md`](DESIGN.md). Planned signed identity is in
+[`DIRECTORY.md`](DIRECTORY.md).
 
 ## Limits
 
-- **Not parallel.** Each agent does one thing at a time; an incoming message
-  waits until the current turn finishes.
+- **Not parallel.** An agent does one thing at a time; an incoming event waits for
+  the current turn to finish.
 - **Heartbeat wakes.** With no traffic the long-poll times out (~5 min), wakes the
   agent, and re-arms — a periodic no-op.
-- **Context growth.** A long-lived instance accumulates context per message.
+- **Context growth.** A long-lived agent accumulates context per event.
 - **Local + self-signed.** The bus binds `127.0.0.1` with an `rcgen` cert. Not
   built to face a network.
 

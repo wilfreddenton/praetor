@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "DUET_SELF=alice DUET_URL=https://localhost:9443 DUET_CA=/home/wilfred/Documents/Datasphere/certs/ca.pem /home/wilfred/Documents/Datasphere/target/release/duet-liveness"
+            "command": "ESC_SELF=alice ESC_URL=https://localhost:9443 ESC_CA=/home/wilfred/Documents/Datasphere/certs/ca.pem /home/wilfred/Documents/Datasphere/target/release/escapement-hook"
           }
         ]
       }
