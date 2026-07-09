@@ -23,11 +23,17 @@
 //! - [`identity`] — keys, signing, verification, the peer allowlist.
 //! - [`bus`] — the broker: per-recipient queues with `POST /send`, `GET /recv`.
 
+#[cfg(feature = "agent")]
+pub mod agent;
+
 #[cfg(feature = "bus")]
 pub mod bus;
 
 #[cfg(feature = "identity")]
 pub mod identity;
+
+#[cfg(feature = "agent")]
+pub mod policy;
 
 /// Unix milliseconds.
 pub fn now_ms() -> u64 {

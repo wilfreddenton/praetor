@@ -18,9 +18,11 @@ readme = "README.md"
 # what keeps the tree free of `ring`, and therefore trivially cross-compilable.
 
 [features]
-default = ["bus", "identity"]
+default = ["bus", "agent"]
 bus = ["dep:axum", "dep:hyper", "dep:hyper-util", "dep:tower-service", "dep:dashmap", "dep:tokio", "dep:tracing", "dep:tracing-subscriber", "dep:clap"]
 identity = ["dep:ed25519-dalek", "dep:getrandom", "dep:base64", "dep:clap"]
+# the per-agent channel server (MCP over stdio, pushes into a live session)
+agent = ["identity", "dep:rmcp", "dep:schemars", "dep:reqwest", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +46,11 @@ ed25519-dalek = { version = "3", optional = true }
 getrandom = { version = "0.3", optional = true }
 base64 = { version = "0.22", optional = true }
 
+# no TLS features: the agent talks plain HTTP to a loopback bus
+reqwest = { version = "0.13", default-features = false, features = ["json", "query"], optional = true }
+rmcp = { version = "2", features = ["server", "transport-io", "macros"], optional = true }
+schemars = { version = "1", optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 
@@ -56,6 +63,11 @@ required-features = ["bus"]
 name = "escapement-keygen"
 path = "src/bin/escapement-keygen.rs"
 required-features = ["identity"]
+
+[[bin]]
+name = "escapement-agent"
+path = "src/bin/escapement-agent.rs"
+required-features = ["agent"]
 
 [profile.release]
 lto = "fat"

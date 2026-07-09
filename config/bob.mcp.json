@@ -1,11 +1,11 @@
 {
   "mcpServers": {
-    "duet": {
-      "command": "/home/wilfred/Documents/Datasphere/target/release/duet",
+    "escapement": {
+      "command": "/home/wilfred/Documents/Datasphere/target/release/escapement-agent",
       "env": {
-        "ESC_SELF": "bob",
-        "ESC_URL": "https://localhost:9443",
-        "ESC_CA": "/home/wilfred/Documents/Datasphere/certs/ca.pem"
+        "ESC_KEY": "/home/wilfred/Documents/Datasphere/config/bob.key",
+        "ESC_PEERS": "/home/wilfred/Documents/Datasphere/config/bob-peers.json",
+        "ESC_URL": "http://127.0.0.1:9440"
       }
     }
   }

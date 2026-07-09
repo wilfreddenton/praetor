@@ -1,0 +1,3 @@
+{
+  "bob": { "key": "<bob-public-key-from-escapement-keygen>", "may": "*" }
+}

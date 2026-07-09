@@ -1,0 +1,3 @@
+{
+  "alice": { "key": "<alice-public-key-from-escapement-keygen>", "may": "*" }
+}

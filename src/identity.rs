@@ -9,8 +9,6 @@
 //! signature can never be replayed into a different context and no pair of
 //! fields can be shifted across their boundary.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -154,40 +152,6 @@ fn canonical(from: AgentId, to: AgentId, ts: u64, msg_id: &str, text: &str) -> V
     b
 }
 
-/// Local petname → public key. Purely local UX; the key is the truth.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Peers(pub BTreeMap<String, String>);
-
-impl Peers {
-    pub fn load(path: &std::path::Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading peers file {}", path.display()))?;
-        serde_json::from_str(&raw).context("peers file is not valid JSON")
-    }
-
-    /// The authenticated sender's petname, if we know them. `None` means the
-    /// key is not on the allowlist and the message must be dropped.
-    pub fn petname(&self, id: AgentId) -> Option<&str> {
-        let b64 = id.to_b64();
-        self.0
-            .iter()
-            .find(|(_, v)| **v == b64)
-            .map(|(k, _)| k.as_str())
-    }
-
-    pub fn resolve(&self, petname: &str) -> Result<AgentId> {
-        let b64 = self
-            .0
-            .get(petname)
-            .ok_or_else(|| anyhow!("unknown peer '{petname}'"))?;
-        AgentId::from_b64(b64)
-    }
-
-    pub fn contains(&self, id: AgentId) -> bool {
-        self.petname(id).is_some()
-    }
-}
-
 /// Reject messages whose timestamp is too far from now, bounding replay windows.
 pub fn check_freshness(ts: u64, now: u64, max_skew_ms: u64) -> Result<()> {
     let delta = now.abs_diff(ts);
@@ -279,20 +243,6 @@ mod tests {
         let alice = key();
         let restored = AgentKey::from_b64(&alice.to_b64()).unwrap();
         assert_eq!(restored.id(), alice.id());
-    }
-
-    #[test]
-    fn peers_gate_on_key_not_name() {
-        let (alice, eve) = (key(), key());
-        let mut peers = Peers::default();
-        peers.0.insert("alice".into(), alice.id().to_b64());
-
-        assert_eq!(peers.petname(alice.id()), Some("alice"));
-        assert!(peers.contains(alice.id()));
-        // Eve is not on the allowlist, whatever she calls herself.
-        assert!(!peers.contains(eve.id()));
-        assert_eq!(peers.resolve("alice").unwrap(), alice.id());
-        assert!(peers.resolve("eve").is_err());
     }
 
     #[test]
