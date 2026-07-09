@@ -162,7 +162,7 @@ impl Peers {
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading peers file {}", path.display()))?;
-        Ok(serde_json::from_str(&raw).context("peers file is not valid JSON")?)
+        serde_json::from_str(&raw).context("peers file is not valid JSON")
     }
 
     /// The authenticated sender's petname, if we know them. `None` means the
