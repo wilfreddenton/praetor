@@ -2,19 +2,22 @@
 //!
 //! A peer is a **public key** with a local petname and a **grant**. The grant is
 //! the dial: `"*"` means unrestricted (handled inline, all tools — only for
-//! machines you fully control), and a list means scoped (handled in a disposable
-//! subagent whose tools are limited to those patterns).
+//! machines you fully control), and a **capability name** means scoped: the
+//! request is handled by a disposable subagent of that name, whose `tools:`
+//! frontmatter limits what it can do. That frontmatter is the enforcement — the
+//! subagent literally cannot call a tool it wasn't given.
 //!
 //! ```json
 //! {
 //!   "my-laptop":    { "key": "8Emom3…", "may": "*" },
-//!   "build-server": { "key": "rq2AzH…", "may": ["Bash(cargo test:*)", "Read"] },
-//!   "some-bot":     { "key": "Zc91xK…", "may": [] }
+//!   "build-server": { "key": "rq2AzH…", "may": "run-tests" },
+//!   "some-bot":     { "key": "Zc91xK…", "may": "read-only" }
 //! }
 //! ```
 //!
-//! The **default for an unlisted or unparseable peer is deny-everything**, so the
-//! safe state is the fallback.
+//! Here `run-tests` refers to `.claude/agents/run-tests.md`, an agent definition
+//! whose `tools:` line is the capability. The **default for an unlisted peer is
+//! deny-everything**, so the safe state is the fallback.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -32,10 +35,10 @@ pub enum Grant {
     /// peers whose private keys you hold — a compromise of any such peer becomes
     /// arbitrary tool execution here.
     All,
-    /// Handled in a quarantined subagent limited to these tool patterns. An
-    /// empty list means "may send, but may run nothing" — useful for a peer that
-    /// only delivers information.
-    Scoped(Vec<String>),
+    /// Handled in a quarantined subagent of this name (`.claude/agents/<name>.md`),
+    /// whose `tools:` frontmatter is the capability. The subagent fetches the
+    /// untrusted body itself, so it never enters the main context.
+    Scoped(String),
 }
 
 impl<'de> Deserialize<'de> for Grant {
@@ -43,21 +46,10 @@ impl<'de> Deserialize<'de> for Grant {
         use serde::de::Error;
         match Value::deserialize(d)? {
             Value::String(s) if s == "*" => Ok(Grant::All),
-            Value::String(other) => Err(D::Error::custom(format!(
-                "grant must be \"*\" or a list of tool patterns, got \"{other}\""
-            ))),
-            Value::Array(items) => {
-                let mut patterns = Vec::with_capacity(items.len());
-                for it in items {
-                    match it {
-                        Value::String(s) => patterns.push(s),
-                        _ => return Err(D::Error::custom("tool patterns must be strings")),
-                    }
-                }
-                Ok(Grant::Scoped(patterns))
-            }
+            Value::String(name) if !name.is_empty() => Ok(Grant::Scoped(name)),
+            Value::String(_) => Err(D::Error::custom("capability name must not be empty")),
             _ => Err(D::Error::custom(
-                "grant must be \"*\" or a list of tool patterns",
+                "grant must be \"*\" or a capability name (agent), as a string",
             )),
         }
     }
@@ -67,7 +59,17 @@ impl Serialize for Grant {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
             Grant::All => s.serialize_str("*"),
-            Grant::Scoped(v) => v.serialize(s),
+            Grant::Scoped(name) => s.serialize_str(name),
+        }
+    }
+}
+
+impl Grant {
+    /// The capability agent name for a scoped grant.
+    pub fn capability(&self) -> Option<&str> {
+        match self {
+            Grant::All => None,
+            Grant::Scoped(name) => Some(name),
         }
     }
 }
@@ -182,18 +184,26 @@ mod tests {
     }
 
     #[test]
-    fn list_parses_as_scoped() {
-        let (k, p) = policy_with(r#"["Bash(cargo test:*)", "Read"]"#);
-        match &p.peer(k.id()).unwrap().grant {
-            Grant::Scoped(v) => assert_eq!(v, &["Bash(cargo test:*)", "Read"]),
-            Grant::All => panic!("should be scoped"),
-        }
+    fn capability_name_parses_as_scoped() {
+        let (k, p) = policy_with("\"run-tests\"");
+        assert_eq!(
+            p.peer(k.id()).unwrap().grant,
+            Grant::Scoped("run-tests".into())
+        );
+        assert_eq!(
+            p.peer(k.id()).unwrap().grant.capability(),
+            Some("run-tests")
+        );
     }
 
     #[test]
-    fn empty_list_is_scoped_with_no_tools() {
-        let (k, p) = policy_with("[]");
-        assert_eq!(p.peer(k.id()).unwrap().grant, Grant::Scoped(vec![]));
+    fn empty_capability_name_is_rejected() {
+        let k = AgentKey::generate().unwrap();
+        let raw = format!(
+            r#"{{ "alice": {{ "key": "{}", "may": "" }} }}"#,
+            k.id().to_b64()
+        );
+        assert!(Policy::parse(&raw).is_err());
     }
 
     #[test]
@@ -207,13 +217,16 @@ mod tests {
     }
 
     #[test]
-    fn bad_grant_string_is_rejected() {
+    fn non_string_grant_is_rejected() {
         let k = AgentKey::generate().unwrap();
         let raw = format!(
-            r#"{{ "alice": {{ "key": "{}", "may": "everything" }} }}"#,
+            r#"{{ "alice": {{ "key": "{}", "may": ["x"] }} }}"#,
             k.id().to_b64()
         );
-        assert!(Policy::parse(&raw).is_err());
+        assert!(
+            Policy::parse(&raw).is_err(),
+            "an array is no longer a valid grant"
+        );
     }
 
     #[test]
@@ -243,8 +256,8 @@ mod tests {
     fn grant_round_trips_through_json() {
         assert_eq!(serde_json::to_string(&Grant::All).unwrap(), "\"*\"");
         assert_eq!(
-            serde_json::to_string(&Grant::Scoped(vec!["Read".into()])).unwrap(),
-            "[\"Read\"]"
+            serde_json::to_string(&Grant::Scoped("run-tests".into())).unwrap(),
+            "\"run-tests\""
         );
     }
 }

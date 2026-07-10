@@ -23,12 +23,10 @@ pub const MAX_SKEW_MS: u64 = 60_000;
 pub enum Dispatch {
     /// Trusted peer: push the full content into the session now.
     Inline { petname: String, text: String },
-    /// Scoped peer: quarantine the body, push only metadata. The subagent
-    /// enforcement layer fetches and runs it under `patterns`.
-    Scoped {
-        petname: String,
-        patterns: Vec<String>,
-    },
+    /// Scoped peer: quarantine the body, push only metadata. The main agent
+    /// spawns a subagent named `capability` (whose `tools:` frontmatter limits
+    /// it) to fetch and act on the body.
+    Scoped { petname: String, capability: String },
 }
 
 /// Why a message was dropped. All of these are logged, none reach the model.
@@ -79,9 +77,9 @@ pub fn decide(
             petname: peer.petname.clone(),
             text: msg.text.clone(),
         },
-        Grant::Scoped(patterns) => Dispatch::Scoped {
+        Grant::Scoped(capability) => Dispatch::Scoped {
             petname: peer.petname.clone(),
-            patterns: patterns.clone(),
+            capability: capability.clone(),
         },
     })
 }
@@ -127,6 +125,7 @@ mod tests {
     use crate::policy::Policy;
 
     fn policy_for(key: &AgentKey, may: &str) -> Policy {
+        // `may` is a JSON string literal, e.g. "\"*\"" or "\"run-tests\"".
         let raw = format!(
             r#"{{ "alice": {{ "key": "{}", "may": {} }} }}"#,
             key.id().to_b64(),
@@ -153,15 +152,16 @@ mod tests {
     #[test]
     fn scoped_peer_withholds_the_body() {
         let (alice, me) = (AgentKey::generate().unwrap(), AgentKey::generate().unwrap());
-        let policy = policy_for(&alice, r#"["Bash(cargo test:*)"]"#);
+        let policy = policy_for(&alice, "\"run-tests\"");
         let msg = alice.sign(me.id(), "secret prose", 1_000, "m1");
         let mut seen = Dedupe::new(16);
-        // The dispatch carries no text — the body stays quarantined.
+        // The dispatch names the capability agent but carries no text — the body
+        // stays quarantined until the subagent fetches it.
         assert_eq!(
             decide(&msg, me.id(), &policy, 1_000, &mut seen),
             Ok(Dispatch::Scoped {
                 petname: "alice".into(),
-                patterns: vec!["Bash(cargo test:*)".into()]
+                capability: "run-tests".into()
             })
         );
     }
