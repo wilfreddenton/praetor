@@ -166,6 +166,11 @@ only system libraries. One feature-gated crate: `bus`, `agent`, `identity`.
 | claude-peers-mcp | ✅ | anyone on the broker | none (`--dangerously-skip-permissions`) | none |
 | **escapement** | ✅ | **signed + allowlisted keys** | **per-peer capability dial** | **quarantine + subagent** |
 
+## Deploying
+
+Run it on your own machines over Tailscale (no code changes, no public exposure), and
+federate later by adding a relay URL. See [`DEPLOY.md`](docs/DEPLOY.md).
+
 ## Design
 
 The full walkthrough — execution model, the channel discovery, the three gates,

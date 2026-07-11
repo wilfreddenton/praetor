@@ -44,16 +44,23 @@ struct Args {
     /// The peer policy file (peers.json).
     #[arg(long, env = "ESC_PEERS")]
     peers: PathBuf,
-    /// Bus base URL.
-    #[arg(long, env = "ESC_URL", default_value = "http://127.0.0.1:9440")]
-    url: String,
+    /// One or more bus base URLs (comma-separated). With several, the agent
+    /// polls and sends to all of them and dedupes by msg_id — the federation
+    /// path is just "add a URL." One URL is the common single-relay case.
+    #[arg(
+        long,
+        env = "ESC_URL",
+        value_delimiter = ',',
+        default_value = "http://127.0.0.1:9440"
+    )]
+    url: Vec<String>,
 }
 
 /// Shared between the MCP handler (outbound) and the long-poll loop (inbound).
 struct Inner {
     key: AgentKey,
     policy: Policy,
-    url: String,
+    urls: Vec<String>,
     http: reqwest::Client,
     dedupe: Mutex<Dedupe>,
     /// Withheld scoped bodies, keyed by msg_id. Drained one-shot by fetch_request.
@@ -61,13 +68,33 @@ struct Inner {
 }
 
 impl Inner {
+    /// Deliver to every relay, best-effort. Succeeds if at least one accepts;
+    /// the recipient's dedupe collapses copies that arrive via multiple relays.
     async fn post_send(&self, to_key: &str, msg: &SignedMessage) -> Result<()> {
-        self.http
-            .post(format!("{}/send", self.url))
-            .json(&json!({ "to": to_key, "payload": msg }))
-            .send()
-            .await?
-            .error_for_status()?;
+        let body = json!({ "to": to_key, "payload": msg });
+        let mut last_err = None;
+        let mut delivered = 0;
+        for url in &self.urls {
+            match self
+                .http
+                .post(format!("{url}/send"))
+                .json(&body)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+            {
+                Ok(_) => delivered += 1,
+                Err(e) => {
+                    tracing::warn!(%url, "send to relay failed: {e}");
+                    last_err = Some(e);
+                }
+            }
+        }
+        if delivered == 0 {
+            return Err(last_err
+                .map(anyhow::Error::from)
+                .unwrap_or_else(|| anyhow::anyhow!("no relays configured")));
+        }
         Ok(())
     }
 }
@@ -180,14 +207,17 @@ fn new_msg_id() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Long-poll the bus and push everything that passes the gate.
-async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleServer>) {
+/// Long-poll one relay and push everything that passes the gate. Several of
+/// these run concurrently (one per relay), all sharing `inner` — so the dedupe
+/// set collapses a message that arrives via more than one relay to a single
+/// push. This is the whole of what federation needs.
+async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleServer>, url: String) {
     let me = inner.key.id();
     let me_b64 = me.to_b64();
     loop {
         let resp = inner
             .http
-            .get(format!("{}/recv", inner.url))
+            .get(format!("{url}/recv"))
             .query(&[("me", me_b64.as_str()), ("timeout_ms", "25000")])
             .timeout(Duration::from_secs(30))
             .send()
@@ -310,12 +340,17 @@ async fn main() -> Result<()> {
             .with_context(|| format!("reading {}", args.key.display()))?,
     )?;
     let policy = Policy::load(&args.peers)?;
-    tracing::info!(me = %key.id().fingerprint(), peers = policy.len(), "agent starting");
+    tracing::info!(
+        me = %key.id().fingerprint(),
+        peers = policy.len(),
+        relays = args.url.len(),
+        "agent starting"
+    );
 
     let inner = Arc::new(Inner {
         key,
         policy,
-        url: args.url,
+        urls: args.url,
         http: reqwest::Client::new(),
         dedupe: Mutex::new(Dedupe::new(DEDUPE_CAP)),
         quarantine: Mutex::new(Quarantine::new(QUARANTINE_CAP)),
@@ -326,7 +361,14 @@ async fn main() -> Result<()> {
         tool_router: Agent::tool_router(),
     };
     let service = agent.serve(stdio()).await?;
-    tokio::spawn(inbound_loop(inner, service.peer().clone()));
+
+    // One inbound long-poll per relay; all share `inner`, so dedupe collapses a
+    // message that arrives via more than one relay.
+    let peer = service.peer().clone();
+    for url in inner.urls.clone() {
+        tokio::spawn(inbound_loop(inner.clone(), peer.clone(), url));
+    }
+
     service.waiting().await?;
     Ok(())
 }
