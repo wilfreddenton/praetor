@@ -2,7 +2,7 @@
 # PreToolUse guard for the scoped-peer path.
 #
 # It enforces exactly one rule: the main agent may not call
-# `mcp__escapement__fetch_request`. Only a subagent may — because that is how an
+# `mcp__praetor__fetch_request`. Only a subagent may — because that is how an
 # untrusted peer's request body is kept out of the long-lived main context. The
 # per-capability tool limits are enforced separately, and more strongly, by each
 # capability agent's own `tools:` frontmatter (a subagent cannot call a tool it
@@ -15,7 +15,7 @@
 # Register with a matcher for the fetch_request tool:
 #
 #   { "hooks": { "PreToolUse": [ {
-#       "matcher": "mcp__escapement__fetch_request",
+#       "matcher": "mcp__praetor__fetch_request",
 #       "hooks": [ { "type": "command", "command": "/path/to/pretooluse-guard.sh" } ]
 #   } ] } }
 set -euo pipefail

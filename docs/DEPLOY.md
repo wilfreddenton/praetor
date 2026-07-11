@@ -1,6 +1,6 @@
-# Deploying escapement
+# Deploying praetor
 
-Only the **bus** needs deploying. Each `escapement-agent` runs locally next to
+Only the **bus** needs deploying. Each `praetor-mcp` runs locally next to
 its Claude Code session (Claude Code spawns it as an MCP server), so "deploy"
 means "put a bus somewhere every agent can reach."
 
@@ -9,11 +9,11 @@ means "put a bus somewhere every agent can reach."
 For a trusted mesh — machines whose keys you hold, using `"*"` peers — this is
 the right deployment. Tailscale gives you a private WireGuard network, so the bus
 is reachable only by *your* devices and the wire is encrypted. That preserves the
-same trust model escapement was designed around (only trusted peers can reach the
+same trust model praetor was designed around (only trusted peers can reach the
 bus), with **no code changes and no public exposure** — which is exactly why you
 don't need the public-relay hardening (signed-recv, E2E) for this setup.
 
-Note escapement speaks **plain HTTP** on purpose (no TLS in the binary — that's
+Note praetor speaks **plain HTTP** on purpose (no TLS in the binary — that's
 what keeps it pure-Rust/static). Over Tailscale that's fine: WireGuard already
 encrypts everything. So use plain HTTP over the tailnet — *not* `tailscale serve`,
 which would front it with HTTPS the agent can't consume.
@@ -31,7 +31,7 @@ internet or your LAN — the bus has no auth of its own, so its reachability *is
 its security boundary:
 
 ```bash
-escapement-bus --addr "$(tailscale ip -4):9440"
+praetor-bus --addr "$(tailscale ip -4):9440"
 ```
 
 (Or `--addr 0.0.0.0:9440` if the host has no public inbound — e.g. a laptop or a
@@ -40,15 +40,15 @@ expected here, the tailnet is the trust boundary.)
 
 ### 3. Point each agent at it
 
-In each agent's `.mcp.json`, set `ESC_URL` to the bus's MagicDNS name:
+In each agent's `.mcp.json`, set `PRAETOR_URL` to the bus's MagicDNS name:
 
 ```json
-{ "mcpServers": { "escapement": {
-  "command": "/path/to/escapement-agent",
+{ "mcpServers": { "praetor": {
+  "command": "/path/to/praetor-mcp",
   "env": {
-    "ESC_KEY":   "/path/to/alice.key",
-    "ESC_PEERS": "/path/to/alice-peers.json",
-    "ESC_URL":   "http://busbox.your-tailnet.ts.net:9440"
+    "PRAETOR_KEY":   "/path/to/alice.key",
+    "PRAETOR_PEERS": "/path/to/alice-peers.json",
+    "PRAETOR_URL":   "http://busbox.your-tailnet.ts.net:9440"
   }
 } } }
 ```
@@ -56,7 +56,7 @@ In each agent's `.mcp.json`, set `ESC_URL` to the bus's MagicDNS name:
 Then launch each session as a channel:
 
 ```bash
-claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:escapement
+claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:praetor
 ```
 
 That's the whole deployment. Agents can now be on different machines anywhere —
@@ -64,11 +64,11 @@ Tailscale routes between them.
 
 ## Federation later — just add a URL
 
-`ESC_URL` is a **comma-separated list**. To remove the single-point-of-failure,
+`PRAETOR_URL` is a **comma-separated list**. To remove the single-point-of-failure,
 run a second bus on another machine and list both on every agent:
 
 ```
-ESC_URL=http://busbox.your-tailnet.ts.net:9440,http://backup.your-tailnet.ts.net:9440
+PRAETOR_URL=http://busbox.your-tailnet.ts.net:9440,http://backup.your-tailnet.ts.net:9440
 ```
 
 The agent then **polls and sends to both**, and its dedupe (by `msg_id`)

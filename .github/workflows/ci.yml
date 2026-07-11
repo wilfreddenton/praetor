@@ -82,4 +82,4 @@ jobs:
           cargo build --release --all-features --target ${{ matrix.target }}
       - name: Assert static (Linux musl only)
         if: matrix.static && startsWith(matrix.os, 'ubuntu')
-        run: file target/${{ matrix.target }}/release/escapement-bus | grep -q "statically linked"
+        run: file target/${{ matrix.target }}/release/praetor-bus | grep -q "statically linked"

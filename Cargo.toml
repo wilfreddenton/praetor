@@ -1,13 +1,10 @@
 [package]
-# NOTE: placeholder name. The escapement (Stop-hook) design was superseded by
-# Claude Code channels; this crate is now the bus + per-agent channel server.
-# Rename once, at the end.
-name = "escapement"
+name = "praetor"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/wilfreddenton/escapement"
-description = "Agent-to-agent messaging for Claude Code, over channels"
+repository = "https://github.com/wilfreddenton/praetor"
+description = "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels"
 keywords = ["claude-code", "mcp", "agents", "ai", "channel"]
 categories = ["command-line-utilities", "asynchronous"]
 readme = "README.md"
@@ -55,18 +52,18 @@ schemars = { version = "1", optional = true }
 tokio = { version = "1", features = ["full", "test-util"] }
 
 [[bin]]
-name = "escapement-bus"
-path = "src/bin/escapement-bus.rs"
+name = "praetor-bus"
+path = "src/bin/praetor-bus.rs"
 required-features = ["bus"]
 
 [[bin]]
-name = "escapement-keygen"
-path = "src/bin/escapement-keygen.rs"
+name = "praetor-keygen"
+path = "src/bin/praetor-keygen.rs"
 required-features = ["identity"]
 
 [[bin]]
-name = "escapement-agent"
-path = "src/bin/escapement-agent.rs"
+name = "praetor-mcp"
+path = "src/bin/praetor-mcp.rs"
 required-features = ["agent"]
 
 [profile.release]

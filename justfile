@@ -1,4 +1,4 @@
-# escapement — common tasks. Run `just` for the list.
+# praetor — common tasks. Run `just` for the list.
 
 default:
     @just --list
@@ -29,15 +29,15 @@ no-c:
 # Build a fully static Linux binary (needs: rustup target add <triple>).
 static triple="aarch64-unknown-linux-musl":
     cargo build --release --all-features --target {{triple}}
-    @file target/{{triple}}/release/escapement-bus | grep -q "statically linked" && echo "static OK"
+    @file target/{{triple}}/release/praetor-bus | grep -q "statically linked" && echo "static OK"
 
 # Generate an identity. Example: just keygen alice
 keygen name:
-    cargo run --release --features identity --bin escapement-keygen -- --out {{name}}.key
+    cargo run --release --features identity --bin praetor-keygen -- --out {{name}}.key
 
 # Run the bus (foreground).
 bus addr="127.0.0.1:9440":
-    cargo run --release --features bus --bin escapement-bus -- --addr {{addr}}
+    cargo run --release --features bus --bin praetor-bus -- --addr {{addr}}
 
 # Everything CI runs.
 ci: lint test no-c

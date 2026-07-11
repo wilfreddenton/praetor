@@ -8,13 +8,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use escapement::identity::AgentKey;
+use praetor::identity::AgentKey;
 
 #[derive(Parser)]
 #[command(about = "Generate an Ed25519 agent identity")]
 struct Args {
     /// Where to write the secret key.
-    #[arg(long, env = "ESC_KEY")]
+    #[arg(long, env = "PRAETOR_KEY")]
     out: PathBuf,
     /// Overwrite an existing key file.
     #[arg(long)]

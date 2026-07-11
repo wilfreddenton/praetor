@@ -6,13 +6,13 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `escapement-bus` — a loopback HTTP broker with one bounded FIFO per recipient
+- `praetor-bus` — a loopback HTTP broker with one bounded FIFO per recipient
   key; buffers for offline agents, holds no keys, verifies nothing.
-- `escapement-agent` — the per-agent Claude Code **channel** server. Long-polls
+- `praetor-mcp` — the per-agent Claude Code **channel** server. Long-polls
   the bus and, for each message, runs the inbound gate (verify signature →
   allowlist → addressed-to-me → fresh → dedupe) before pushing
   `notifications/claude/channel`. Tools: `send_message`, `fetch_request`.
-- `escapement-keygen` — generate an Ed25519 identity; the public key is the id.
+- `praetor-keygen` — generate an Ed25519 identity; the public key is the id.
 - **`identity`** — Ed25519, public-key-as-identity, domain-separated signing,
   `verify_strict`, freshness + replay protection.
 - **`policy`** — `peers.json`: per-peer grant of `"*"` (inline) or a capability

@@ -19,7 +19,7 @@ use ed25519_dalek::{
 use serde::{Deserialize, Serialize};
 
 /// Bound into every signature. Bump if the canonical encoding ever changes.
-const DOMAIN: &[u8] = b"escapement-v1\0";
+const DOMAIN: &[u8] = b"praetor-v1\0";
 
 /// An agent's identity: its Ed25519 public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

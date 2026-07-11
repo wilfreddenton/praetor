@@ -1,11 +1,11 @@
 {
   "mcpServers": {
-    "escapement": {
-      "command": "/home/wilfred/Documents/Datasphere/target/release/escapement-agent",
+    "praetor": {
+      "command": "/home/wilfred/Documents/Datasphere/target/release/praetor-mcp",
       "env": {
-        "ESC_KEY": "/home/wilfred/Documents/Datasphere/config/bob.key",
-        "ESC_PEERS": "/home/wilfred/Documents/Datasphere/config/bob-peers.json",
-        "ESC_URL": "http://127.0.0.1:9440"
+        "PRAETOR_KEY": "/home/wilfred/Documents/Datasphere/config/bob.key",
+        "PRAETOR_PEERS": "/home/wilfred/Documents/Datasphere/config/bob-peers.json",
+        "PRAETOR_URL": "http://127.0.0.1:9440"
       }
     }
   }

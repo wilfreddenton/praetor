@@ -31,7 +31,7 @@ set -euo pipefail
 
 TAG="${1:?usage: stop-hook.sh <tag> <command>}"
 CMD="${2:?usage: stop-hook.sh <tag> <command>}"
-MARKER="ESC_TAG=${TAG}"
+MARKER="PRAETOR_TAG=${TAG}"
 
 payload="$(cat)"
 

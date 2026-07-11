@@ -9,17 +9,17 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use clap::Parser;
-use escapement::bus::Broker;
+use praetor::bus::Broker;
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
 #[command(about = "Message broker for Claude Code agents")]
 struct Args {
     /// Address to listen on. Loopback unless you really mean otherwise.
-    #[arg(long, env = "ESC_ADDR", default_value = "127.0.0.1:9440")]
+    #[arg(long, env = "PRAETOR_ADDR", default_value = "127.0.0.1:9440")]
     addr: SocketAddr,
     /// Per-recipient queue cap. When full, the oldest message is dropped.
-    #[arg(long, env = "ESC_QUEUE_CAP", default_value_t = 1024)]
+    #[arg(long, env = "PRAETOR_QUEUE_CAP", default_value_t = 1024)]
     queue_cap: usize,
 }
 
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "escapement=info".into()),
+                .unwrap_or_else(|_| "praetor=info".into()),
         )
         .init();
 

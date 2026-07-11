@@ -1,6 +1,6 @@
-# escapement
+# praetor
 
-[![CI](https://github.com/wilfreddenton/escapement/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/escapement/actions/workflows/ci.yml)
+[![CI](https://github.com/wilfreddenton/praetor/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/praetor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 **Secure agent-to-agent messaging and capability-scoped delegation for Claude Code.**
@@ -28,7 +28,7 @@ claude --dangerously-skip-permissions --dangerously-load-development-channels se
 That is: *any process that can reach the local broker can inject text into an
 agent running with every permission check turned off, and there is no way to
 know who sent it.* Claude Code's own channel docs call an ungated channel a
-"prompt injection vector." `escapement` is the answer to that — the thing that
+"prompt injection vector." `praetor` is the answer to that — the thing that
 lets you turn the permissions back **on**.
 
 ## The trust model
@@ -93,21 +93,21 @@ All three are verified against a live Claude session (see below).
 ## Quickstart
 
 ```bash
-cargo build --release            # escapement-bus, escapement-agent, escapement-keygen
+cargo build --release            # praetor-bus, praetor-mcp, praetor-keygen
 
 # 1. one shared bus (loopback HTTP, no TLS needed — see Security)
-./target/release/escapement-bus
+./target/release/praetor-bus
 
-# 2. an identity per agent; escapement-keygen prints the public key to share
-./target/release/escapement-keygen --out alice.key
+# 2. an identity per agent; praetor-keygen prints the public key to share
+./target/release/praetor-keygen --out alice.key
 ```
 
-For each agent, drop an MCP config naming the `escapement` server (see
+For each agent, drop an MCP config naming the `praetor` server (see
 [`config/`](config)) and a `peers.json` listing the peers' public keys. Then
 launch it as a channel:
 
 ```bash
-claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:escapement
+claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:praetor
 ```
 
 To use a scoped capability, add the capability agent to the project's
@@ -164,7 +164,7 @@ only system libraries. One feature-gated crate: `bus`, `agent`, `identity`.
 |---|---|---|---|---|
 | Agent Teams (built-in) | ✅ | lead-spawned only | permission relay | — |
 | claude-peers-mcp | ✅ | anyone on the broker | none (`--dangerously-skip-permissions`) | none |
-| **escapement** | ✅ | **signed + allowlisted keys** | **per-peer capability dial** | **quarantine + subagent** |
+| **praetor** | ✅ | **signed + allowlisted keys** | **per-peer capability dial** | **quarantine + subagent** |
 
 ## Deploying
 
