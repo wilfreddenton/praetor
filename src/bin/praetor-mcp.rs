@@ -19,6 +19,7 @@ use clap::Parser;
 use praetor::agent::{Dedupe, Dispatch, HeldRequest, Quarantine, decide};
 use praetor::identity::{AgentKey, SignedMessage};
 use praetor::policy::Policy;
+use praetor::store::{Dir, LogRecord, Store};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -28,12 +29,17 @@ use rmcp::model::{
 use rmcp::transport::stdio;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 const DEDUPE_CAP: usize = 4096;
 const QUARANTINE_CAP: usize = 256;
+/// The reserved queue name for this agent's outbound messages. Can't collide
+/// with a real recipient (an Ed25519 key is 43 base64 chars, never "outbox").
+const OUTBOX: &str = "outbox";
+/// Default number of messages returned by `conversation_history`.
+const HISTORY_DEFAULT: usize = 20;
 
 #[derive(Parser)]
 #[command(about = "Per-agent channel server for Claude Code")]
@@ -54,6 +60,21 @@ struct Args {
         default_value = "http://127.0.0.1:9440"
     )]
     url: Vec<String>,
+    /// This agent's own local store (a SEPARATE file from the bus's `--db`).
+    /// Holds the durable outbound queue and the conversation log. Omit for an
+    /// in-memory store: outbound retries and history won't survive a restart.
+    #[arg(long, env = "PRAETOR_AGENT_DB")]
+    db: Option<PathBuf>,
+}
+
+/// A message waiting to be delivered to the bus, serialized into the outbox
+/// queue so an unsent message survives a restart of this agent.
+#[derive(Serialize, Deserialize)]
+struct OutboundJob {
+    to_key: String,
+    peer: String,
+    msg_id: String,
+    msg: SignedMessage,
 }
 
 /// Shared between the MCP handler (outbound) and the long-poll loop (inbound).
@@ -65,6 +86,10 @@ struct Inner {
     dedupe: Mutex<Dedupe>,
     /// Withheld scoped bodies, keyed by msg_id. Drained one-shot by fetch_request.
     quarantine: Mutex<Quarantine>,
+    /// Durable outbound queue + conversation log (this agent's own file).
+    store: Store,
+    /// Wakes the outbound sender when a new message is queued.
+    outbox: Arc<Notify>,
 }
 
 impl Inner {
@@ -121,9 +146,42 @@ struct FetchArgs {
     msg_id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct StatusArgs {
+    /// The msg_id returned by send_message.
+    msg_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HistoryArgs {
+    /// The peer's petname, as in peers.json.
+    peer: String,
+    /// How many recent messages to show (default 20).
+    limit: Option<u32>,
+}
+
+/// One log line: direction arrow, peer, state, then the body (or a placeholder
+/// when a scoped peer's body was deliberately withheld).
+fn render_record(r: &LogRecord) -> String {
+    let arrow = match r.dir {
+        Dir::Out => "→",
+        Dir::In => "←",
+    };
+    let text = r.text.as_deref().unwrap_or("[scoped body withheld]");
+    format!(
+        "{arrow} {} [{}] (msg_id {}): {text}",
+        r.peer, r.state, r.msg_id
+    )
+}
+
 #[tool_router]
 impl Agent {
-    #[tool(description = "Send a message to a peer agent, addressed by its petname in peers.json.")]
+    #[tool(
+        description = "Send a message to a peer agent, addressed by its petname in peers.json. \
+                       The message is queued durably and delivered in the background, so it is \
+                       not lost if the bus is momentarily unreachable; use message_status to \
+                       track it."
+    )]
     async fn send_message(
         &self,
         Parameters(args): Parameters<SendArgs>,
@@ -133,18 +191,116 @@ impl Agent {
             .policy
             .resolve(&args.to)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
-        let msg = self
-            .inner
-            .key
-            .sign(to, &args.text, praetor::now_ms(), &new_msg_id());
+        let msg_id = new_msg_id();
+        let ts = praetor::now_ms();
+        let msg = self.inner.key.sign(to, &args.text, ts, &msg_id);
+        let job = OutboundJob {
+            to_key: to.to_b64(),
+            peer: args.to.clone(),
+            msg_id: msg_id.clone(),
+            msg,
+        };
+        let bytes = serde_json::to_vec(&job)
+            .map_err(|e| McpError::internal_error(format!("encoding message: {e}"), None))?;
+        // Record before enqueuing so history reflects the message even if we
+        // crash between the two; the outbox is the source of truth for delivery.
         self.inner
-            .post_send(&to.to_b64(), &msg)
+            .store
+            .log_put(LogRecord {
+                msg_id: msg_id.clone(),
+                dir: Dir::Out,
+                peer: args.to.clone(),
+                text: Some(args.text.clone()),
+                ts,
+                state: "pending".into(),
+            })
             .await
-            .map_err(|e| McpError::internal_error(format!("send failed: {e}"), None))?;
+            .map_err(|e| McpError::internal_error(format!("logging message: {e}"), None))?;
+        self.inner
+            .store
+            .enqueue(OUTBOX.into(), bytes)
+            .await
+            .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
+        self.inner.outbox.notify_one();
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "delivered to {}",
+            "queued for {} (msg_id {msg_id}); delivering in the background",
             args.to
         ))]))
+    }
+
+    #[tool(
+        description = "Check the delivery state of a message you sent, by its msg_id. States: \
+                       pending (queued, not yet accepted by the bus), sent (handed to the bus)."
+    )]
+    async fn message_status(
+        &self,
+        Parameters(args): Parameters<StatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .inner
+            .store
+            .log_get(args.msg_id.clone())
+            .await
+            .map_err(|e| McpError::internal_error(format!("reading log: {e}"), None))?
+        {
+            Some(r) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                render_record(&r),
+            )])),
+            None => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                "no message with msg_id '{}' in the log",
+                args.msg_id
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Show the recent message history with a peer (both directions), newest \
+                       last. Scoped/untrusted peers' bodies are withheld and shown as a placeholder."
+    )]
+    async fn conversation_history(
+        &self,
+        Parameters(args): Parameters<HistoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = args.limit.unwrap_or(HISTORY_DEFAULT as u32) as usize;
+        let recs = self
+            .inner
+            .store
+            .log_by_peer(args.peer.clone(), limit)
+            .await
+            .map_err(|e| McpError::internal_error(format!("reading log: {e}"), None))?;
+        let body = if recs.is_empty() {
+            format!("no message history with {}", args.peer)
+        } else {
+            recs.iter()
+                .map(render_record)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
+    }
+
+    #[tool(
+        description = "List outbound messages still waiting to be delivered (the bus was \
+                       unreachable when they were sent). They retry automatically."
+    )]
+    async fn list_pending(&self) -> Result<CallToolResult, McpError> {
+        let queued = self
+            .inner
+            .store
+            .list(OUTBOX.into())
+            .await
+            .map_err(|e| McpError::internal_error(format!("reading outbox: {e}"), None))?;
+        let body = if queued.is_empty() {
+            "nothing pending; all sent messages were accepted by the bus".to_string()
+        } else {
+            let lines: Vec<String> = queued
+                .iter()
+                .filter_map(|(_k, bytes)| serde_json::from_slice::<OutboundJob>(bytes).ok())
+                .map(|j| format!("→ {} (msg_id {})", j.peer, j.msg_id))
+                .collect();
+            format!("{} pending:\n{}", lines.len(), lines.join("\n"))
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
 
     #[tool(
@@ -264,6 +420,7 @@ async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleSer
         };
         match verdict {
             Ok(Dispatch::Inline { petname, text }) => {
+                log_inbound(&inner.store, &msg.msg_id, &petname, Some(&text)).await;
                 push(&peer, &text, &petname, &msg.msg_id, false).await;
             }
             Ok(Dispatch::Scoped {
@@ -272,6 +429,10 @@ async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleSer
             }) => {
                 // Withhold the untrusted body; hand the main agent only metadata
                 // and the capability to spawn. The body reaches a subagent only.
+                // For the same reason, the log records that a scoped message
+                // arrived but NEVER its text — a durable file must not resurface
+                // untrusted content.
+                log_inbound(&inner.store, &msg.msg_id, &petname, None).await;
                 tracing::info!(sender = %petname, capability = %capability, msg_id = %msg.msg_id, "scoped request quarantined");
                 inner.quarantine.lock().await.hold(
                     msg.msg_id.clone(),
@@ -312,6 +473,73 @@ async fn ack_message(http: &reqwest::Client, url: &str, me: &str, ack: Option<&s
         .and_then(|r| r.error_for_status())
     {
         tracing::warn!(%url, "ack failed (message may redeliver): {e}");
+    }
+}
+
+/// Record a received message in the conversation log. `text` is `None` for a
+/// scoped/untrusted peer, whose body must never be persisted. Best-effort: a
+/// log failure must not stop delivery.
+async fn log_inbound(store: &Store, msg_id: &str, peer: &str, text: Option<&str>) {
+    let rec = LogRecord {
+        msg_id: msg_id.to_string(),
+        dir: Dir::In,
+        peer: peer.to_string(),
+        text: text.map(str::to_string),
+        ts: praetor::now_ms(),
+        state: "received".into(),
+    };
+    if let Err(e) = store.log_put(rec).await {
+        tracing::warn!("failed to log inbound message: {e}");
+    }
+}
+
+/// Drains the durable outbox: for each queued message, deliver it to the bus and
+/// only then ack it out of the queue. A message that can't be delivered (bus
+/// down) stays queued and is retried, so nothing is lost across a restart. Runs
+/// as a single background task, so it is the sole sender — no double-send races.
+async fn outbound_loop(inner: Arc<Inner>) {
+    loop {
+        let next = match inner.store.peek_oldest(OUTBOX.into()).await {
+            Ok(Some(item)) => item,
+            Ok(None) => {
+                inner.outbox.notified().await;
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("outbox read failed: {e}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        let (key, bytes) = next;
+        let job: OutboundJob = match serde_json::from_slice(&bytes) {
+            Ok(j) => j,
+            Err(e) => {
+                // Poison entry we can never send; drop it so it can't wedge the queue.
+                tracing::warn!("dropping undecodable outbox entry: {e}");
+                let _ = inner.store.ack(key).await;
+                continue;
+            }
+        };
+        match inner.post_send(&job.to_key, &job.msg).await {
+            Ok(()) => {
+                let _ = inner.store.ack(key).await;
+                let _ = inner
+                    .store
+                    .log_set_state(job.msg_id.clone(), "sent".into())
+                    .await;
+                tracing::info!(to = %job.peer, msg_id = %job.msg_id, "delivered from outbox");
+                // Loop straight back to drain the next without waiting.
+            }
+            Err(e) => {
+                tracing::warn!(to = %job.peer, "delivery failed, will retry: {e}");
+                // Wait for a retry interval OR a fresh enqueue, whichever first.
+                tokio::select! {
+                    _ = inner.outbox.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
+        }
     }
 }
 
@@ -371,6 +599,16 @@ async fn main() -> Result<()> {
             .with_context(|| format!("reading {}", args.key.display()))?,
     )?;
     let policy = Policy::load(&args.peers)?;
+    let store = match &args.db {
+        Some(path) => {
+            tracing::info!(db = %path.display(), "durable outbox + log");
+            Store::on_disk(path)?
+        }
+        None => {
+            tracing::warn!("no --db: in-memory outbox + log, lost on restart");
+            Store::in_memory()?
+        }
+    };
     tracing::info!(
         me = %key.id().fingerprint(),
         peers = policy.len(),
@@ -396,6 +634,8 @@ async fn main() -> Result<()> {
         http,
         dedupe: Mutex::new(Dedupe::new(DEDUPE_CAP)),
         quarantine: Mutex::new(Quarantine::new(QUARANTINE_CAP)),
+        store,
+        outbox: Arc::new(Notify::new()),
     });
 
     let agent = Agent {
@@ -403,6 +643,9 @@ async fn main() -> Result<()> {
         tool_router: Agent::tool_router(),
     };
     let service = agent.serve(stdio()).await?;
+
+    // Single background sender draining the durable outbox (retries on bus-down).
+    tokio::spawn(outbound_loop(inner.clone()));
 
     // One inbound long-poll per relay; all share `inner`, so dedupe collapses a
     // message that arrives via more than one relay.
