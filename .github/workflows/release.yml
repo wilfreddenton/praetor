@@ -1,0 +1,86 @@
+name: Release
+
+# Tag a version (e.g. `git tag v0.1.0 && git push --tags`) to build the static
+# binaries for every supported target and attach them to a GitHub Release. Those
+# assets are what the npm wrapper's postinstall downloads and what a plugin can
+# bundle — so this workflow is the single source of prebuilt binaries.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload assets
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each target builds on its NATIVE runner — no cross linker, no C
+          # toolchain, just `rustup target add`. The pure-Rust/no-C invariant is
+          # exactly what makes this a plain matrix instead of a cross-compile mess.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, static: true }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, static: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, static: false }
+          - { os: macos-13, target: x86_64-apple-darwin, static: false }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, static: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        shell: bash
+        run: |
+          # A self-contained Windows binary needs the CRT linked statically;
+          # musl is already fully static, macOS links only libSystem.
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo build --release --all-features --target ${{ matrix.target }}
+
+      - name: Assert static (Linux musl)
+        if: matrix.static
+        run: file target/${{ matrix.target }}/release/praetor-mcp | grep -qi static
+
+      - name: Stage assets
+        id: stage
+        shell: bash
+        run: |
+          target="${{ matrix.target }}"
+          bindir="target/$target/release"
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+
+          # (1) The raw praetor-mcp binary, per target — one file the npm
+          #     wrapper downloads and runs directly.
+          cp "$bindir/praetor-mcp$ext" "praetor-mcp-$target$ext"
+
+          # (2) A full archive with all three binaries — for humans, and for a
+          #     plugin that bundles them instead of using the npm wrapper.
+          stage="praetor-$target"
+          mkdir "$stage"
+          cp "$bindir/praetor-mcp$ext" "$bindir/praetor-bus$ext" "$bindir/praetor-keygen$ext" "$stage/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$stage.zip" "$stage" >/dev/null
+            echo "archive=$stage.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "$stage.tar.gz" "$stage"
+            echo "archive=$stage.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+          echo "binary=praetor-mcp-$target$ext" >> "$GITHUB_OUTPUT"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.stage.outputs.binary }}
+            ${{ steps.stage.outputs.archive }}
