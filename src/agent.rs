@@ -9,9 +9,9 @@
 //! quarantined subagent — for now its body is withheld and only metadata is
 //! pushed, pending the `PreToolUse` enforcement layer.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
-use crate::identity::{AgentId, SignedMessage, check_freshness};
+use crate::identity::{AgentId, MessageKind, SignedMessage, check_freshness};
 use crate::policy::{Grant, Policy};
 
 /// How far a message's timestamp may be from local time. Bounds the replay
@@ -27,6 +27,12 @@ pub enum Dispatch {
     /// spawns a subagent named `capability` (whose `tools:` frontmatter limits
     /// it) to fetch and act on the body.
     Scoped { petname: String, capability: String },
+    /// A non-peer *knocked*: it wants to pair. Carries only its key and a
+    /// self-claimed name — never actionable text. Surfaced for human accept/reject.
+    PairRequest { from_key: String, name: String },
+    /// A non-peer replied that it accepted our earlier knock. The handler adds it
+    /// only if we actually have an outstanding request to that key.
+    PairAccept { from_key: String, name: String },
 }
 
 /// Why a message was dropped. All of these are logged, none reach the model.
@@ -37,6 +43,9 @@ pub enum Reject {
     WrongRecipient,
     Stale,
     Replay,
+    /// A pairing kind from someone already a peer, or an otherwise nonsensical
+    /// (peer, kind) combination — ignored.
+    Unexpected,
 }
 
 pub type Verdict = Result<Dispatch, Reject>;
@@ -54,34 +63,52 @@ pub fn decide(
     //    string, which is attacker-controlled until verified.
     let from = msg.verify().map_err(|_| Reject::BadSignature)?;
 
-    // 2. Is this authenticated key on the allowlist?
-    let peer = policy.peer(from).ok_or(Reject::NotAllowlisted)?;
-
-    // 3. Is it actually addressed to us?
+    // 2. Is it actually addressed to us?
     let to = AgentId::from_b64(&msg.to).map_err(|_| Reject::WrongRecipient)?;
     if to != me {
         return Err(Reject::WrongRecipient);
     }
 
+    // 3. Allowlist. A non-peer may deliver *only* a pairing knock; a plain
+    //    message from one is dropped here, before it can even consume a dedupe
+    //    slot (so non-peers can't flood the replay set).
+    let peer = policy.peer(from);
+    if peer.is_none() && msg.kind == MessageKind::Message {
+        return Err(Reject::NotAllowlisted);
+    }
+
     // 4. Fresh enough to bound replays.
     check_freshness(msg.ts, now, MAX_SKEW_MS).map_err(|_| Reject::Stale)?;
 
-    // 5. Not already seen. Do this last so a replayed *valid* message is still
-    //    recorded only once, and invalid ones never consume a dedupe slot.
+    // 5. Not already seen. Do this after the cheap rejects so a replayed *valid*
+    //    message is recorded only once and invalid ones never consume a slot.
     if !seen.insert(&msg.msg_id) {
         return Err(Reject::Replay);
     }
 
-    Ok(match &peer.grant {
-        Grant::All => Dispatch::Inline {
-            petname: peer.petname.clone(),
-            text: msg.text.clone(),
-        },
-        Grant::Scoped(capability) => Dispatch::Scoped {
-            petname: peer.petname.clone(),
-            capability: capability.clone(),
-        },
-    })
+    match (peer, msg.kind) {
+        (Some(peer), MessageKind::Message) => Ok(match &peer.grant {
+            Grant::All => Dispatch::Inline {
+                petname: peer.petname.clone(),
+                text: msg.text.clone(),
+            },
+            Grant::Scoped(capability) => Dispatch::Scoped {
+                petname: peer.petname.clone(),
+                capability: capability.clone(),
+            },
+        }),
+        // A non-peer knock: identity + self-claimed name only.
+        (None, MessageKind::PairRequest) => Ok(Dispatch::PairRequest {
+            from_key: from.to_b64(),
+            name: msg.text.clone(),
+        }),
+        (None, MessageKind::PairAccept) => Ok(Dispatch::PairAccept {
+            from_key: from.to_b64(),
+            name: msg.text.clone(),
+        }),
+        // A pairing kind from an existing peer, or any other combination.
+        _ => Err(Reject::Unexpected),
+    }
 }
 
 /// A scoped request whose untrusted body is held back from the main context
@@ -139,6 +166,67 @@ impl Quarantine {
 
     pub fn is_empty(&self) -> bool {
         self.held.is_empty()
+    }
+}
+
+/// A bounded key→value table (drop-oldest), for pending pairing state: inbound
+/// knocks (sender key → claimed name) and outbound requests (target key → the
+/// grant we'll assign them on accept). Bounded so a knock flood can't grow it.
+pub struct PairTable {
+    order: VecDeque<String>,
+    map: HashMap<String, String>,
+    cap: usize,
+}
+
+impl PairTable {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            map: HashMap::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Insert or update `key`; evicts the oldest at capacity.
+    pub fn put(&mut self, key: String, value: String) {
+        if !self.map.contains_key(&key) {
+            if self.order.len() >= self.cap
+                && let Some(old) = self.order.pop_front()
+            {
+                self.map.remove(&old);
+            }
+            self.order.push_back(key.clone());
+        }
+        self.map.insert(key, value);
+    }
+
+    /// Remove and return `key`'s value.
+    pub fn take(&mut self, key: &str) -> Option<String> {
+        let v = self.map.remove(key)?;
+        self.order.retain(|k| k != key);
+        Some(v)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&String> {
+        self.map.get(key)
+    }
+
+    /// Resolve a full key or an exact 8-char fingerprint to `(key, value)`.
+    pub fn find(&self, key_or_fp: &str) -> Option<(String, String)> {
+        self.map
+            .iter()
+            .find(|(k, _)| {
+                k.as_str() == key_or_fp || k.chars().take(8).collect::<String>() == key_or_fp
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.map.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 }
 
@@ -346,5 +434,63 @@ mod tests {
         q.hold("m3".into(), held("three")); // m2, m3 fit; nothing wrongly evicted
         assert_eq!(q.take("m2"), Some(held("two")));
         assert_eq!(q.take("m3"), Some(held("three")));
+    }
+
+    #[test]
+    fn non_peer_knock_is_surfaced_not_dropped() {
+        let (stranger, me) = (AgentKey::generate().unwrap(), AgentKey::generate().unwrap());
+        let policy = Policy::default(); // nobody is a peer
+        let msg = stranger.sign_as(
+            me.id(),
+            "stranger-laptop",
+            1_000,
+            "k1",
+            MessageKind::PairRequest,
+        );
+        let mut seen = Dedupe::new(16);
+        assert_eq!(
+            decide(&msg, me.id(), &policy, 1_000, &mut seen),
+            Ok(Dispatch::PairRequest {
+                from_key: stranger.id().to_b64(),
+                name: "stranger-laptop".into()
+            })
+        );
+    }
+
+    #[test]
+    fn non_peer_plain_message_is_still_denied() {
+        let (stranger, me) = (AgentKey::generate().unwrap(), AgentKey::generate().unwrap());
+        let policy = Policy::default();
+        let msg = stranger.sign(me.id(), "hi", 1_000, "m1");
+        let mut seen = Dedupe::new(16);
+        assert_eq!(
+            decide(&msg, me.id(), &policy, 1_000, &mut seen),
+            Err(Reject::NotAllowlisted)
+        );
+    }
+
+    #[test]
+    fn pairing_kind_from_existing_peer_is_unexpected() {
+        let (alice, me) = (AgentKey::generate().unwrap(), AgentKey::generate().unwrap());
+        let policy = policy_for(&alice, "\"*\"");
+        let msg = alice.sign_as(me.id(), "x", 1_000, "k1", MessageKind::PairRequest);
+        let mut seen = Dedupe::new(16);
+        assert_eq!(
+            decide(&msg, me.id(), &policy, 1_000, &mut seen),
+            Err(Reject::Unexpected)
+        );
+    }
+
+    #[test]
+    fn pair_table_put_take_and_find() {
+        let mut t = PairTable::new(8);
+        t.put("aaaabbbbcccc".into(), "read-only".into());
+        assert_eq!(t.get("aaaabbbbcccc"), Some(&"read-only".to_string()));
+        assert_eq!(
+            t.find("aaaabbbb"), // exact 8-char fingerprint
+            Some(("aaaabbbbcccc".into(), "read-only".into()))
+        );
+        assert_eq!(t.take("aaaabbbbcccc"), Some("read-only".into()));
+        assert!(t.is_empty());
     }
 }

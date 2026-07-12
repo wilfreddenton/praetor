@@ -11,7 +11,7 @@
         ]
       },
       {
-        "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer",
+        "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer|mcp__praetor__accept_pair|mcp__praetor__reject_pair",
         "hooks": [
           {
             "type": "command",

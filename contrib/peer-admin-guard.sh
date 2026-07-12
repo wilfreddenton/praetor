@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# PreToolUse guard for the peer-management tools.
+# PreToolUse guard for the peer-management + pairing-accept tools.
 #
-# `add_peer` / `remove_peer` change *who is trusted* — an operator action. A
-# scoped (untrusted) peer's request is handled inside a subagent, so denying
-# these tools whenever the call originates in a subagent stops an untrusted peer
-# from escalating itself onto the allowlist. The main agent is unaffected and
-# still gets Claude Code's normal permission prompt before the change is made.
+# `add_peer` / `remove_peer` / `accept_pair` / `reject_pair` change *who is
+# trusted* — an operator action. A scoped (untrusted) peer's request is handled
+# inside a subagent, so denying these tools whenever the call originates in a
+# subagent stops an untrusted peer from escalating itself onto the allowlist. The
+# main agent is unaffected and still gets Claude Code's normal permission prompt.
 #
 # This mirrors pretooluse-guard.sh but with the opposite condition: that guard
 # keeps fetch_request *in* subagents; this one keeps peer edits *out* of them.
@@ -16,7 +16,7 @@
 # Register with a matcher for both tools:
 #
 #   { "hooks": { "PreToolUse": [ {
-#       "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer",
+#       "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer|mcp__praetor__accept_pair|mcp__praetor__reject_pair",
 #       "hooks": [ { "type": "command", "command": "/path/to/peer-admin-guard.sh" } ]
 #   } ] } }
 set -euo pipefail

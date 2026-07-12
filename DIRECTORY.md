@@ -9,14 +9,12 @@ keypair and knows peers' public keys via `peers.json`. How it works (signing,
 This file records what was researched and deliberately left for later. None of
 it is needed for a trusted mesh; the natural trigger for each is noted.
 
-## Peer discovery / registry / presence
+## Peer discovery / registry / presence — **built** (v0.2.0)
 
-Today an agent must already know a peer's public key (in `peers.json`). A
-registry would turn "know the key in advance" into "ask who's around, and who can
-do X": a roster with TOFU-pinned keys, presence, and capability lookup. The
-federation path (many dumb relays, each agent publishing its own relay list —
-the Nostr "outbox" model) is the no-single-point-of-failure upgrade and is
-already unblocked by multi-relay support in `praetor-mcp`.
+Implemented: a bus roster with TTL presence, `discover`, and a human-gated
+pairing handshake (`request_pair` / `accept_pair`), keys pinned TOFU. See
+[`docs/DISCOVERY.md`](docs/DISCOVERY.md). Still open: **capability lookup** ("who
+can do X"), which pairs naturally with semantic matching below.
 
 ## Opening the relay to strangers
 

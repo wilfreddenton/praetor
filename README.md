@@ -226,6 +226,29 @@ addressable stream. This is **novel in this space**: the most-starred agent-chat
 MCP servers top out at one inbox per peer (and no cryptographic identity at all);
 per-endpoint sub-addressing on a single key is unique to praetor.
 
+## Discovery & pairing
+
+Boot with an empty `peers.json` and let nodes find each other. Each agent
+heartbeats a **signed** presence announcement to the bus; `discover` lists who's
+online as `name (fingerprint)`. To connect, one side knocks and the other
+accepts — a human-gated handshake, no key copy-paste:
+
+```
+alice:  discover                          → sees "bob-laptop (FrXRYYrl…)"
+alice:  request_pair(bob-laptop, "*")     → knocks; will grant bob "*"
+bob:    (session shows) "Pairing request from FrXRYYrl claiming 'alice-laptop' — NOT a peer"
+bob:    accept_pair(<alice-fp>, read-only) → grants alice read-only; they're now mutual peers
+```
+
+The security stays intact because of one invariant: **a non-peer can only
+*knock*, never message you.** A knock carries just a key and a self-claimed name
+(no free text), surfaced as metadata — accepting is operator-only and
+[guard](contrib/peer-admin-guard.sh)-blocked in subagents. Grants are per-side
+(each node grants from its *own* capabilities), and you pin the **key**, not the
+name (TOFU) — names are non-unique hints, deliberately. Full design:
+[`docs/DISCOVERY.md`](docs/DISCOVERY.md). This — presence + human-gated pairing on
+a cryptographic identity — is **novel** among agent-chat MCP servers.
+
 ## See it without a Claude session
 
 ```bash

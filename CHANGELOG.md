@@ -29,6 +29,15 @@ All notable changes to this project are documented here. The format is based on
   [`contrib/peer-admin-guard.sh`](contrib/peer-admin-guard.sh) so an untrusted
   peer can't escalate itself onto the allowlist; the main agent still gets
   Claude Code's normal permission prompt.
+- **Discovery & pairing** (v0.2.0) — a bus **roster** (`/announce` + `/roster`,
+  TTL presence) plus a `discover` tool; and a human-gated **pairing handshake**
+  (`request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`) so nodes
+  boot with an empty `peers.json` and connect at runtime. A non-peer may only
+  *knock* (identity + self-claimed name, no free text); everything else from a
+  non-peer is still dropped. Grants are per-side; keys are pinned TOFU; the accept
+  tools are operator-only (subagent-guarded). Adds a signed `kind` on messages,
+  which bumps the signing domain `praetor-v1 → v2` (a breaking change; all nodes
+  must be ≥0.2.0). Design: [`docs/DISCOVERY.md`](docs/DISCOVERY.md).
 - **Named inboxes (labels)** — a session launches with `PRAETOR_LABEL=<name>` and
   receives only messages addressed to it via `send_message`'s `channel`. Lets
   several sessions share one identity, each with its own addressable stream.

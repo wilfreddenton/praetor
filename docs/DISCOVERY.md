@@ -1,7 +1,8 @@
 # Discovery & Pairing (design)
 
-> Status: **approved design, not yet implemented.** Moves the "peer discovery /
-> registry / presence" item from [`DIRECTORY.md`](../DIRECTORY.md) into scope.
+> Status: **implemented** (v0.2.0). Bus roster + `discover`; the `kind` field
+> (signing domain `praetor-v2`); the gate's knock branch; and
+> `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`.
 
 Today trust is configured out-of-band: you exchange public keys and hand-edit
 `peers.json` (or `add_peer`). This design lets nodes **start with no peers**,

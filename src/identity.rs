@@ -18,8 +18,30 @@ use ed25519_dalek::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Bound into every signature. Bump if the canonical encoding ever changes.
-const DOMAIN: &[u8] = b"praetor-v1\0";
+/// Bound into every message signature. Bumped v1→v2 when `kind` entered the
+/// canonical encoding; a bump makes old and new signatures mutually unverifiable.
+const DOMAIN: &[u8] = b"praetor-v2\0";
+
+/// What a signed message *is*. A plain `Message` is the everyday case; the pairing
+/// kinds are the only thing a non-peer may deliver (a knock), gated specially.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    #[default]
+    Message,
+    PairRequest,
+    PairAccept,
+}
+
+impl MessageKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            MessageKind::Message => "message",
+            MessageKind::PairRequest => "pair_request",
+            MessageKind::PairAccept => "pair_accept",
+        }
+    }
+}
 
 /// An agent's identity: its Ed25519 public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,10 +101,22 @@ impl AgentKey {
         AgentId(self.0.verifying_key())
     }
 
-    /// Sign a message to `to`. `ts` and `msg_id` are covered, giving replay
+    /// Sign a plain message to `to`. `ts` and `msg_id` are covered, giving replay
     /// protection when paired with the receiver's dedupe set.
     pub fn sign(&self, to: AgentId, text: &str, ts: u64, msg_id: &str) -> SignedMessage {
-        let bytes = canonical(self.id(), to, ts, msg_id, text);
+        self.sign_as(to, text, ts, msg_id, MessageKind::Message)
+    }
+
+    /// Sign a message of a specific `kind` (plain, or a pairing knock/accept).
+    pub fn sign_as(
+        &self,
+        to: AgentId,
+        text: &str,
+        ts: u64,
+        msg_id: &str,
+        kind: MessageKind,
+    ) -> SignedMessage {
+        let bytes = canonical(self.id(), to, ts, msg_id, text, kind);
         let sig: Signature = self.0.sign(&bytes);
         SignedMessage {
             from: self.id().to_b64(),
@@ -90,6 +124,7 @@ impl AgentKey {
             text: text.to_string(),
             ts,
             msg_id: msg_id.to_string(),
+            kind,
             sig: B64.encode(sig.to_bytes()),
         }
     }
@@ -114,6 +149,8 @@ pub struct SignedMessage {
     pub text: String,
     pub ts: u64,
     pub msg_id: String,
+    #[serde(default)]
+    pub kind: MessageKind,
     pub sig: String,
 }
 
@@ -134,7 +171,7 @@ impl SignedMessage {
             .map_err(|_| anyhow!("signature must be {SIGNATURE_LENGTH} bytes"))?;
         let sig = Signature::from_bytes(&sig_bytes);
 
-        let bytes = canonical(from, to, self.ts, &self.msg_id, &self.text);
+        let bytes = canonical(from, to, self.ts, &self.msg_id, &self.text, self.kind);
         from.as_verifying_key()
             .verify_strict(&bytes, &sig)
             .map_err(|_| {
@@ -150,12 +187,22 @@ impl SignedMessage {
 /// Domain-separated, length-prefixed. Length prefixes stop an attacker shifting
 /// bytes across the `msg_id`/`text` boundary to forge a different message under
 /// the same signature.
-fn canonical(from: AgentId, to: AgentId, ts: u64, msg_id: &str, text: &str) -> Vec<u8> {
-    let mut b = Vec::with_capacity(DOMAIN.len() + 80 + msg_id.len() + text.len());
+fn canonical(
+    from: AgentId,
+    to: AgentId,
+    ts: u64,
+    msg_id: &str,
+    text: &str,
+    kind: MessageKind,
+) -> Vec<u8> {
+    let k = kind.as_str();
+    let mut b = Vec::with_capacity(DOMAIN.len() + 88 + k.len() + msg_id.len() + text.len());
     b.extend_from_slice(DOMAIN);
     b.extend_from_slice(from.as_verifying_key().as_bytes());
     b.extend_from_slice(to.as_verifying_key().as_bytes());
     b.extend_from_slice(&ts.to_le_bytes());
+    b.extend_from_slice(&(k.len() as u32).to_le_bytes());
+    b.extend_from_slice(k.as_bytes());
     b.extend_from_slice(&(msg_id.len() as u32).to_le_bytes());
     b.extend_from_slice(msg_id.as_bytes());
     b.extend_from_slice(&(text.len() as u32).to_le_bytes());
@@ -273,15 +320,15 @@ mod tests {
     fn length_prefixes_stop_boundary_shifting() {
         // ("ab", "c") and ("a", "bc") must not produce the same signed bytes.
         let (alice, bob) = (key(), key());
-        let a = canonical(alice.id(), bob.id(), 1, "ab", "c");
-        let b = canonical(alice.id(), bob.id(), 1, "a", "bc");
+        let a = canonical(alice.id(), bob.id(), 1, "ab", "c", MessageKind::Message);
+        let b = canonical(alice.id(), bob.id(), 1, "a", "bc", MessageKind::Message);
         assert_ne!(a, b);
     }
 
     #[test]
     fn domain_separation_is_bound_in() {
         let (alice, bob) = (key(), key());
-        let bytes = canonical(alice.id(), bob.id(), 1, "m1", "hi");
+        let bytes = canonical(alice.id(), bob.id(), 1, "m1", "hi", MessageKind::Message);
         assert!(bytes.starts_with(DOMAIN));
     }
 
@@ -326,5 +373,15 @@ mod tests {
             forged_key.verify().is_err(),
             "can't reattribute to another key"
         );
+    }
+
+    #[test]
+    fn kind_is_covered_by_signature() {
+        let (alice, bob) = (key(), key());
+        let mut m = alice.sign_as(bob.id(), "hi", 1, "m1", MessageKind::Message);
+        assert!(m.verify().is_ok());
+        // A message can't be re-typed into a pairing knock under the same signature.
+        m.kind = MessageKind::PairRequest;
+        assert!(m.verify().is_err(), "kind must be signed");
     }
 }
