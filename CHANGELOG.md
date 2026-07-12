@@ -29,6 +29,12 @@ All notable changes to this project are documented here. The format is based on
   [`contrib/peer-admin-guard.sh`](contrib/peer-admin-guard.sh) so an untrusted
   peer can't escalate itself onto the allowlist; the main agent still gets
   Claude Code's normal permission prompt.
+- **Named inboxes (labels)** — a session launches with `PRAETOR_LABEL=<name>` and
+  receives only messages addressed to it via `send_message`'s `channel`. Lets
+  several sessions share one identity, each with its own addressable stream.
+  Routing is `key#label`; the signature still binds the bare key, so the trust
+  gate is untouched and the bus needs no changes. Per-endpoint sub-addressing on
+  one key is novel among agent-chat MCP servers.
 - Live integration harnesses in [`experiments/`](experiments) that drive a real
   Claude session through a PTY, plus the runtime facts they established.
 - `contrib/stop-hook.sh` — the pre-channels fallback, for environments where

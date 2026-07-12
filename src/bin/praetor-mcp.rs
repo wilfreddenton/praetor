@@ -65,6 +65,12 @@ struct Args {
     /// in-memory store: outbound retries and history won't survive a restart.
     #[arg(long, env = "PRAETOR_AGENT_DB")]
     db: Option<PathBuf>,
+    /// Optional inbox label for this session. Several sessions can share one
+    /// identity: each launches with a distinct label and receives only messages
+    /// a peer addresses to it (`send_message`'s `channel`). Omit for the default
+    /// inbox. The label routes on the bus only — identity is still the key.
+    #[arg(long, env = "PRAETOR_LABEL")]
+    label: Option<String>,
 }
 
 /// A message waiting to be delivered to the bus, serialized into the outbox
@@ -142,6 +148,9 @@ struct SendArgs {
     to: String,
     /// The message text.
     text: String,
+    /// Optional label to reach a specific named session on the recipient (one it
+    /// was launched with, e.g. "work"). Omit for the recipient's default inbox.
+    channel: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -215,12 +224,23 @@ impl Agent {
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         let msg_id = new_msg_id();
         let ts = praetor::now_ms();
+        // The signature always binds the bare recipient key; the label is only a
+        // bus-routing suffix (`key#label`), so the trust gate is untouched and a
+        // relay could at worst misroute among the recipient's own inboxes.
         let msg = self.inner.key.sign(to, &args.text, ts, &msg_id);
+        let to_key = match args.channel.as_deref() {
+            Some(c) if !c.trim().is_empty() => format!("{}#{c}", to.to_b64()),
+            _ => to.to_b64(),
+        };
         let job = OutboundJob {
-            to_key: to.to_b64(),
+            to_key,
             peer: args.to.clone(),
             msg_id: msg_id.clone(),
             msg,
+        };
+        let dest = match args.channel.as_deref() {
+            Some(c) if !c.trim().is_empty() => format!("{} #{c}", args.to),
+            _ => args.to.clone(),
         };
         let bytes = serde_json::to_vec(&job)
             .map_err(|e| McpError::internal_error(format!("encoding message: {e}"), None))?;
@@ -245,8 +265,7 @@ impl Agent {
             .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
         self.inner.outbox.notify_one();
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "queued for {} (msg_id {msg_id}); delivering in the background",
-            args.to
+            "queued for {dest} (msg_id {msg_id}); delivering in the background"
         ))]))
     }
 
@@ -460,9 +479,16 @@ fn new_msg_id() -> String {
 /// these run concurrently (one per relay), all sharing `inner` — so the dedupe
 /// set collapses a message that arrives via more than one relay to a single
 /// push. This is the whole of what federation needs.
-async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleServer>, url: String) {
+async fn inbound_loop(
+    inner: Arc<Inner>,
+    peer: rmcp::service::Peer<rmcp::RoleServer>,
+    url: String,
+    me_route: String,
+) {
+    // `me` is the identity (the trust gate checks the signed `to` against it);
+    // `me_route` is the bus routing address — the key, or `key#label`.
     let me = inner.key.id();
-    let me_b64 = me.to_b64();
+    let me_b64 = me_route;
     // Track connection state so we log only on transitions, not every retry —
     // otherwise a bus that's down for a while spams a warning every backoff.
     let mut online = true;
@@ -703,8 +729,14 @@ async fn main() -> Result<()> {
             Store::in_memory()?
         }
     };
+    // The bus routing address: the bare key, or `key#label` for a labeled inbox.
+    let me_route = match args.label.as_deref() {
+        Some(l) if !l.trim().is_empty() => format!("{}#{l}", key.id().to_b64()),
+        _ => key.id().to_b64(),
+    };
     tracing::info!(
         me = %key.id().fingerprint(),
+        inbox = args.label.as_deref().unwrap_or("(default)"),
         peers = policy.len(),
         relays = args.url.len(),
         "agent starting"
@@ -746,7 +778,12 @@ async fn main() -> Result<()> {
     // message that arrives via more than one relay.
     let peer = service.peer().clone();
     for url in inner.urls.clone() {
-        tokio::spawn(inbound_loop(inner.clone(), peer.clone(), url));
+        tokio::spawn(inbound_loop(
+            inner.clone(),
+            peer.clone(),
+            url,
+            me_route.clone(),
+        ));
     }
 
     service.waiting().await?;

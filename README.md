@@ -156,6 +156,30 @@ restart. Because they change *who is trusted*, they're operator actions:
 subagent (so an untrusted scoped peer can't add itself), and Claude Code prompts
 you before each change in the main agent.
 
+## Named inboxes (labels)
+
+One machine, many sessions. An identity (key) can host several **named inboxes**:
+launch each session with a label and it receives only what's addressed to it.
+
+```bash
+PRAETOR_LABEL=work     claude --dangerously-load-development-channels server:praetor
+PRAETOR_LABEL=proj-x   claude --dangerously-load-development-channels server:praetor
+```
+
+A peer targets one with `send_message`'s `channel`: `send_message(to="fedora",
+channel="work")`. Routing is `key#label`; the **signed `to` is still the bare
+key**, so the trust gate is unchanged and a label is only an (unsigned) routing
+hint — harmless, since only an already-authorized sender can produce a valid
+message to that key at all. No label = the default inbox (and full backward
+compatibility). It needs *zero* bus changes: the broker already routes by an
+opaque recipient string.
+
+Without labels, multiple sessions sharing one key are competing readers of one
+queue — an arbitrary session gets each message. Labels give each session its own
+addressable stream. This is **novel in this space**: the most-starred agent-chat
+MCP servers top out at one inbox per peer (and no cryptographic identity at all);
+per-endpoint sub-addressing on a single key is unique to praetor.
+
 ## See it without a Claude session
 
 ```bash
