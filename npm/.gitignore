@@ -1,0 +1,4 @@
+bin/praetor-mcp-bin
+bin/praetor-mcp-bin.exe
+node_modules/
+*.tgz
