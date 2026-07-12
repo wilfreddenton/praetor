@@ -25,6 +25,14 @@ use crate::store::Store;
 
 pub const DEFAULT_RECV_TIMEOUT_MS: u64 = 25_000;
 
+/// How long a presence announcement stays in the roster without a refresh. Nodes
+/// re-announce on a heartbeat, so the roster reflects who is *currently* online.
+pub const ROSTER_TTL_MS: u64 = 90_000;
+
+/// Cap on distinct roster entries, so an announcement flood can't grow it without
+/// limit. Far above any real mesh; expired entries are pruned first.
+const ROSTER_CAP: usize = 4096;
+
 /// A payload addressed to a recipient, stamped on arrival.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Envelope {
@@ -39,6 +47,10 @@ pub struct Broker {
     /// Per-recipient wakeups for the long-poll. In-memory and rebuildable — the
     /// durable state is entirely in the store.
     notifies: Arc<DashMap<String, Arc<Notify>>>,
+    /// Presence roster: pubkey → (opaque signed announcement, received-at ms).
+    /// In-memory and ephemeral — the bus stores and serves it but never verifies
+    /// it; clients check the signatures. Just a bulletin board.
+    roster: Arc<DashMap<String, (Value, u64)>>,
     cap: usize,
 }
 
@@ -47,8 +59,30 @@ impl Broker {
         Self {
             store,
             notifies: Arc::new(DashMap::new()),
+            roster: Arc::new(DashMap::new()),
             cap: cap.max(1),
         }
+    }
+
+    /// Record a presence announcement, keyed by its self-declared pubkey. Prunes
+    /// expired entries; the announcement is stored verbatim (the bus never
+    /// inspects it beyond the routing key).
+    pub fn announce(&self, pubkey: String, announcement: Value, now: u64) {
+        self.roster
+            .retain(|_, (_, at)| now.saturating_sub(*at) < ROSTER_TTL_MS);
+        if self.roster.len() >= ROSTER_CAP && !self.roster.contains_key(&pubkey) {
+            return; // full of live entries; drop the newcomer rather than evict
+        }
+        self.roster.insert(pubkey, (announcement, now));
+    }
+
+    /// The live (non-expired) announcements.
+    pub fn roster(&self, now: u64) -> Vec<Value> {
+        self.roster
+            .iter()
+            .filter(|e| now.saturating_sub(e.value().1) < ROSTER_TTL_MS)
+            .map(|e| e.value().0.clone())
+            .collect()
     }
 
     fn notify_handle(&self, id: &str) -> Arc<Notify> {
@@ -116,6 +150,8 @@ impl Broker {
             .route("/send", post(send))
             .route("/recv", get(recv_handler))
             .route("/ack", post(ack_handler))
+            .route("/announce", post(announce_handler))
+            .route("/roster", get(roster_handler))
             .with_state(self)
     }
 }
@@ -192,6 +228,24 @@ async fn ack_handler(State(broker): State<Broker>, Json(body): Json<AckBody>) ->
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+/// The announcement is stored verbatim, keyed by the `pubkey` it self-declares —
+/// the only field the bus reads. Everything else (name, ts, sig) is opaque to it.
+async fn announce_handler(State(broker): State<Broker>, Json(body): Json<Value>) -> StatusCode {
+    let Some(pubkey) = body
+        .get("pubkey")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return StatusCode::BAD_REQUEST;
+    };
+    broker.announce(pubkey, body, crate::now_ms());
+    StatusCode::ACCEPTED
+}
+
+async fn roster_handler(State(broker): State<Broker>) -> Response {
+    Json(json!({ "roster": broker.roster(crate::now_ms()) })).into_response()
 }
 
 #[cfg(test)]
@@ -296,5 +350,33 @@ mod tests {
         b.enqueue("alice", json!("wake"), 1).await.unwrap();
         let (env, _) = waiter.await.unwrap().unwrap().unwrap();
         assert_eq!(env.payload, json!("wake"));
+    }
+
+    #[test]
+    fn roster_stores_and_expires() {
+        let b = broker(8);
+        b.announce(
+            "keyA".into(),
+            json!({"pubkey":"keyA","name":"alice"}),
+            1_000,
+        );
+        b.announce("keyB".into(), json!({"pubkey":"keyB","name":"bob"}), 1_000);
+        assert_eq!(b.roster(1_000).len(), 2);
+        assert_eq!(b.roster(1_000 + ROSTER_TTL_MS - 1).len(), 2, "within TTL");
+        assert_eq!(
+            b.roster(1_000 + ROSTER_TTL_MS + 1).len(),
+            0,
+            "expired past TTL"
+        );
+    }
+
+    #[test]
+    fn announce_upserts_by_pubkey() {
+        let b = broker(8);
+        b.announce("keyA".into(), json!({"pubkey":"keyA","name":"old"}), 1_000);
+        b.announce("keyA".into(), json!({"pubkey":"keyA","name":"new"}), 2_000);
+        let r = b.roster(2_000);
+        assert_eq!(r.len(), 1, "same pubkey replaces, not appends");
+        assert_eq!(r[0]["name"], "new");
     }
 }

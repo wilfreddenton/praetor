@@ -93,6 +93,17 @@ impl AgentKey {
             sig: B64.encode(sig.to_bytes()),
         }
     }
+
+    /// Sign a presence announcement: "this key is online, calling itself `name`".
+    pub fn announce(&self, name: &str, ts: u64) -> Announcement {
+        let sig: Signature = self.0.sign(&announce_canonical(self.id(), name, ts));
+        Announcement {
+            pubkey: self.id().to_b64(),
+            name: name.to_string(),
+            ts,
+            sig: B64.encode(sig.to_bytes()),
+        }
+    }
 }
 
 /// What travels over the bus. The bus treats it as an opaque payload.
@@ -149,6 +160,50 @@ fn canonical(from: AgentId, to: AgentId, ts: u64, msg_id: &str, text: &str) -> V
     b.extend_from_slice(msg_id.as_bytes());
     b.extend_from_slice(&(text.len() as u32).to_le_bytes());
     b.extend_from_slice(text.as_bytes());
+    b
+}
+
+/// Bound into presence announcements. Separate from the message `DOMAIN` so the
+/// two version independently — a message-format change need not reissue the
+/// announcement format, and vice versa.
+const ANNOUNCE_DOMAIN: &[u8] = b"praetor-announce-v1\0";
+
+/// A signed presence announcement, published to the bus roster. The `name` is a
+/// self-claim; identity is the key, so a peer [`verify`](Announcement::verify)s
+/// before ever trusting the name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Announcement {
+    pub pubkey: String,
+    pub name: String,
+    pub ts: u64,
+    pub sig: String,
+}
+
+impl Announcement {
+    /// Verify the self-signature; returns the authenticated key on success.
+    pub fn verify(&self) -> Result<AgentId> {
+        let id = AgentId::from_b64(&self.pubkey)?;
+        let raw = B64
+            .decode(&self.sig)
+            .context("announcement signature is not valid base64")?;
+        let sig_bytes: [u8; SIGNATURE_LENGTH] = raw
+            .try_into()
+            .map_err(|_| anyhow!("signature must be {SIGNATURE_LENGTH} bytes"))?;
+        let sig = Signature::from_bytes(&sig_bytes);
+        id.as_verifying_key()
+            .verify_strict(&announce_canonical(id, &self.name, self.ts), &sig)
+            .map_err(|_| anyhow!("announcement does not verify for {}", id.fingerprint()))?;
+        Ok(id)
+    }
+}
+
+fn announce_canonical(pubkey: AgentId, name: &str, ts: u64) -> Vec<u8> {
+    let mut b = Vec::with_capacity(ANNOUNCE_DOMAIN.len() + 40 + name.len());
+    b.extend_from_slice(ANNOUNCE_DOMAIN);
+    b.extend_from_slice(pubkey.as_verifying_key().as_bytes());
+    b.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    b.extend_from_slice(name.as_bytes());
+    b.extend_from_slice(&ts.to_le_bytes());
     b
 }
 
@@ -252,6 +307,24 @@ mod tests {
         assert!(
             check_freshness(5_000, 1_000, 1_000).is_err(),
             "future ts too"
+        );
+    }
+
+    #[test]
+    fn announcement_round_trips_and_rejects_tampering() {
+        let alice = key();
+        let a = alice.announce("alice-laptop", 1234);
+        assert_eq!(a.verify().unwrap(), alice.id());
+
+        let mut tampered_name = a.clone();
+        tampered_name.name = "eve-laptop".into();
+        assert!(tampered_name.verify().is_err(), "name is signed");
+
+        let mut forged_key = a;
+        forged_key.pubkey = key().id().to_b64();
+        assert!(
+            forged_key.verify().is_err(),
+            "can't reattribute to another key"
         );
     }
 }

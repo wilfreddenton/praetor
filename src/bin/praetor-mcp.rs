@@ -9,7 +9,7 @@
 //! A `*` peer's message is pushed inline. A scoped peer's body is withheld
 //! pending the subagent enforcement layer; only a metadata notice is pushed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use praetor::agent::{Dedupe, Dispatch, HeldRequest, Quarantine, decide};
-use praetor::identity::{AgentKey, SignedMessage};
+use praetor::identity::{AgentId, AgentKey, Announcement, SignedMessage};
 use praetor::policy::{Grant, Policy};
 use praetor::store::{Dir, LogRecord, Store};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -30,7 +30,7 @@ use rmcp::transport::stdio;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify};
 
 const DEDUPE_CAP: usize = 4096;
@@ -71,6 +71,10 @@ struct Args {
     /// inbox. The label routes on the bus only — identity is still the key.
     #[arg(long, env = "PRAETOR_LABEL")]
     label: Option<String>,
+    /// Friendly name announced to the bus roster for discovery (default: this
+    /// key's fingerprint). A self-claim — peers verify the key, not the name.
+    #[arg(long, env = "PRAETOR_NAME")]
+    name: Option<String>,
 }
 
 /// A message waiting to be delivered to the bus, serialized into the outbox
@@ -100,6 +104,8 @@ struct Inner {
     store: Store,
     /// Wakes the outbound sender when a new message is queued.
     outbox: Arc<Notify>,
+    /// Friendly name this node announces to the roster for discovery.
+    name: String,
 }
 
 impl Inner {
@@ -340,6 +346,69 @@ impl Agent {
                 .map(|j| format!("→ {} (msg_id {})", j.peer, j.msg_id))
                 .collect();
             format!("{} pending:\n{}", lines.len(), lines.join("\n"))
+        };
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
+    }
+
+    #[tool(
+        description = "List nodes currently announced on the bus roster (name, key \
+                       fingerprint), marking which are already peers. Identity is the key — a \
+                       name is only a self-claim, so verify the fingerprint before pairing."
+    )]
+    async fn discover(&self) -> Result<CallToolResult, McpError> {
+        let me = self.inner.key.id().to_b64();
+        // Verified, deduped-by-key nodes across every relay.
+        let mut nodes: Vec<(String, String)> = Vec::new();
+        let mut seen = HashSet::new();
+        for url in &self.inner.urls {
+            let Some(roster) = fetch_roster(&self.inner.http, url).await else {
+                continue;
+            };
+            for entry in roster {
+                let Ok(ann) = serde_json::from_value::<Announcement>(entry) else {
+                    continue;
+                };
+                // A name is trusted only after the announcement's self-signature
+                // verifies; identity is the key it authenticates.
+                let Ok(id) = ann.verify() else { continue };
+                let pk = id.to_b64();
+                if seen.insert(pk.clone()) {
+                    nodes.push((pk, ann.name));
+                }
+            }
+        }
+        let mut name_counts: HashMap<&str, usize> = HashMap::new();
+        for (_, name) in &nodes {
+            *name_counts.entry(name.as_str()).or_default() += 1;
+        }
+        let policy = self.inner.policy.read().unwrap();
+        let mut lines = Vec::new();
+        for (pk, name) in &nodes {
+            let fp: String = pk.chars().take(8).collect();
+            let mut tags = Vec::new();
+            if *pk == me {
+                tags.push("you");
+            } else if AgentId::from_b64(pk)
+                .ok()
+                .and_then(|id| policy.peer(id).map(|_| ()))
+                .is_some()
+            {
+                tags.push("already a peer");
+            }
+            if name_counts.get(name.as_str()).copied().unwrap_or(0) > 1 {
+                tags.push("name shared — verify fingerprint");
+            }
+            let tagstr = if tags.is_empty() {
+                String::new()
+            } else {
+                format!("  [{}]", tags.join(", "))
+            };
+            lines.push(format!("{name} ({fp}…){tagstr}\n    key: {pk}"));
+        }
+        let body = if lines.is_empty() {
+            "no nodes announced on the bus roster".to_string()
+        } else {
+            lines.join("\n")
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
@@ -663,6 +732,41 @@ async fn outbound_loop(inner: Arc<Inner>) {
     }
 }
 
+/// Periodically publish this node's signed presence to every relay, so it appears
+/// in peers' `discover`. The heartbeat is shorter than the roster TTL, so a live
+/// node never expires from the roster.
+async fn announce_loop(inner: Arc<Inner>) {
+    loop {
+        let ann = inner.key.announce(&inner.name, praetor::now_ms());
+        for url in &inner.urls {
+            let _ = inner
+                .http
+                .post(format!("{url}/announce"))
+                .json(&ann)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await;
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+/// GET one relay's roster; `None` on any failure (relay down, bad JSON).
+async fn fetch_roster(http: &reqwest::Client, url: &str) -> Option<Vec<Value>> {
+    let resp = http
+        .get(format!("{url}/roster"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let val: Value = resp.json().await.ok()?;
+    val.get("roster")
+        .and_then(|r| r.as_array())
+        .map(|a| a.to_vec())
+}
+
 /// One long-poll against a relay. Any transport, HTTP-status, or decode failure
 /// is an `Err` the loop treats uniformly (retry) — the bus simply being absent
 /// is not exceptional here.
@@ -734,6 +838,12 @@ async fn main() -> Result<()> {
         Some(l) if !l.trim().is_empty() => format!("{}#{l}", key.id().to_b64()),
         _ => key.id().to_b64(),
     };
+    // Roster name defaults to the fingerprint — always something to show.
+    let node_name = args
+        .name
+        .clone()
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| key.id().fingerprint());
     tracing::info!(
         me = %key.id().fingerprint(),
         inbox = args.label.as_deref().unwrap_or("(default)"),
@@ -763,6 +873,7 @@ async fn main() -> Result<()> {
         quarantine: Mutex::new(Quarantine::new(QUARANTINE_CAP)),
         store,
         outbox: Arc::new(Notify::new()),
+        name: node_name,
     });
 
     let agent = Agent {
@@ -773,6 +884,8 @@ async fn main() -> Result<()> {
 
     // Single background sender draining the durable outbox (retries on bus-down).
     tokio::spawn(outbound_loop(inner.clone()));
+    // Heartbeat this node's presence to the roster for discovery.
+    tokio::spawn(announce_loop(inner.clone()));
 
     // One inbound long-poll per relay; all share `inner`, so dedupe collapses a
     // message that arrives via more than one relay.
