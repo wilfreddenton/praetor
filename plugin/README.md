@@ -1,8 +1,8 @@
 # praetor plugin
 
 Bundles the whole praetor setup for Claude Code into one install: the MCP server
-(via `npx praetor-mcp`), the two `PreToolUse` guard hooks, and the `read-only`
-capability agent. No hand-editing `settings.json`.
+(via `npx praetor-mcp`), the two `PreToolUse` guard hooks, and the `read-only` /
+`dev` capability agents. No hand-editing `settings.json`.
 
 ## Install
 
@@ -18,10 +18,11 @@ That registers, in every session:
 - **Hooks** — `pretooluse-guard.sh` (keeps `fetch_request` out of the main
   agent) and `peer-admin-guard.sh` (keeps `add_peer`/`remove_peer` out of
   subagents), wired via `${CLAUDE_PLUGIN_ROOT}`.
-- **Agent** — `read-only`, a scoped capability handler.
-- **Skill** — `praetor`, an on-demand playbook for operating the mesh (relaying a
-  request and reporting the reply, handling incoming messages, onboarding peers
-  via discover/pairing).
+- **Agents** — `read-only` (inspect only) and `dev` (read + edit, no shell), the
+  scoped capability presets you grant a peer to fence its tools.
+- **Skill** — `praetor`, an on-demand playbook for operating the mesh
+  (collaborating with a peer until a task completes, handling incoming messages,
+  grants as the tool ceiling, onboarding peers via discover/pairing).
 
 ## One-time setup
 

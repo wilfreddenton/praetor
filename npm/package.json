@@ -1,6 +1,6 @@
 {
   "name": "praetor-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP. Pure-Rust binary, delivered via npm.",
   "keywords": ["claude-code", "mcp", "agents", "ai", "rust", "ed25519"],
   "homepage": "https://github.com/wilfreddenton/praetor",

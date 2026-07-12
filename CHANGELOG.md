@@ -66,8 +66,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Distribution
 - **Claude Code plugin** ([`plugin/`](plugin)) — bundles the MCP server, both
-  guard hooks, and the `read-only` agent; installable via a marketplace
-  (`/plugin marketplace add wilfreddenton/praetor`).
+  guard hooks, the `read-only` / `dev` capability agents, and the `praetor` skill
+  (continuous collaboration as the default mode; grants as the tool ceiling);
+  installable via a marketplace (`/plugin marketplace add wilfreddenton/praetor`).
 - **npm wrapper** ([`npm/`](npm)) — `npx praetor-mcp` fetches the platform's
   prebuilt static binary (the esbuild/Biome model), so the pure-Rust core gets
   the `npx` ergonomics the MCP ecosystem expects.
