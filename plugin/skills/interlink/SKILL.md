@@ -39,6 +39,15 @@ their words to peers, and you surface peers' words back to them.
   the job"), then a clear final result. The peer surfaces each update to its
   operator, so they can follow the work in real time rather than staring at a
   silent channel.
+- **Questions go back to the requester, not your operator.** When you're carrying
+  out a peer's request and need something to proceed — a path, a choice, missing
+  info, a go/no-go on something ambiguous — send that question *back to the peer*
+  with `send_message`. Do **not** surface it to your own operator: the human
+  driving this task is on the *requester's* side, not yours, so a question you pop
+  locally reaches no one. The peer will relay the answer back; continue once you
+  have it. Conversely, when a peer working on something *for you* asks you a
+  question, surface it to your operator and relay their answer back — you are their
+  bridge to the human.
 
 ## Connecting a new peer (no key copy-paste)
 
