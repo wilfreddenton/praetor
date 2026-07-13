@@ -1,11 +1,11 @@
 ---
-name: praetor
-description: Operating praetor, agent-to-agent collaboration for Claude Code. Use when collaborating with a peer agent (continuous back-and-forth toward a task), when a message from a peer arrives, when relaying a one-shot request, or when onboarding/connecting a peer via discover and pairing.
+name: interlink
+description: Operating interlink, agent-to-agent collaboration for Claude Code. Use when collaborating with a peer agent (continuous back-and-forth toward a task), when a message from a peer arrives, when relaying a one-shot request, or when onboarding/connecting a peer via discover and pairing.
 ---
 
-# Operating praetor
+# Operating interlink
 
-praetor lets this Claude session exchange messages with peer agents (other Claude
+interlink lets this Claude session exchange messages with peer agents (other Claude
 Code sessions) through a shared bus, with a real trust model. You act as your
 **human operator's delegate**: you carry their words to peers, and you surface
 peers' words back to them.

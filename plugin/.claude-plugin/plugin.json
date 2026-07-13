@@ -1,8 +1,8 @@
 {
-  "name": "praetor",
+  "name": "interlink",
   "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels.",
   "version": "0.2.1",
   "author": { "name": "Wilfred Denton", "url": "https://github.com/wilfreddenton" },
-  "homepage": "https://github.com/wilfreddenton/praetor",
+  "homepage": "https://github.com/wilfreddenton/interlink",
   "license": "MIT"
 }

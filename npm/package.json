@@ -1,13 +1,13 @@
 {
-  "name": "praetor-mcp",
+  "name": "interlink-mcp",
   "version": "0.2.1",
   "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP. Pure-Rust binary, delivered via npm.",
   "keywords": ["claude-code", "mcp", "agents", "ai", "rust", "ed25519"],
-  "homepage": "https://github.com/wilfreddenton/praetor",
-  "repository": { "type": "git", "url": "git+https://github.com/wilfreddenton/praetor.git" },
+  "homepage": "https://github.com/wilfreddenton/interlink",
+  "repository": { "type": "git", "url": "git+https://github.com/wilfreddenton/interlink.git" },
   "license": "MIT",
-  "bin": { "praetor-mcp": "bin/praetor-mcp.js" },
+  "bin": { "interlink-mcp": "bin/interlink-mcp.js" },
   "scripts": { "postinstall": "node install.js" },
-  "files": ["bin/praetor-mcp.js", "install.js"],
+  "files": ["bin/interlink-mcp.js", "install.js"],
   "engines": { "node": ">=18" }
 }

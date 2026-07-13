@@ -87,4 +87,4 @@ jobs:
         # Modern Rust musl builds are static-PIE, which `file` reports as
         # "static-pie linked"; older ones say "statically linked". Match either
         # (both contain "static"); a dynamic binary says "dynamically linked".
-        run: file target/${{ matrix.target }}/release/praetor-bus | grep -qi static
+        run: file target/${{ matrix.target }}/release/interlink-bus | grep -qi static

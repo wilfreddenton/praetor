@@ -1,4 +1,4 @@
-bin/praetor-mcp-bin
-bin/praetor-mcp-bin.exe
+bin/interlink-mcp-bin
+bin/interlink-mcp-bin.exe
 node_modules/
 *.tgz

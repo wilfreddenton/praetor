@@ -11,21 +11,21 @@ This is a manual/local integration test — it launches a real Claude session an
 costs tokens, so it is NOT part of CI.
 
 Usage:
-    PRAETOR_TEST_DIR=/path/to/workdir python3 live_channel_test.py
+    INTERLINK_TEST_DIR=/path/to/workdir python3 live_channel_test.py
 
 The workdir must contain, before running:
-    bin/               praetor-mcp, praetor-keygen, praetor-bus
-    alice.key bob.key  from praetor-keygen
+    bin/               interlink-mcp, interlink-keygen, interlink-bus
+    alice.key bob.key  from interlink-keygen
     bob-peers.json     allowlisting alice (e.g. {"alice":{"key":"…","may":"*"}})
     alice-peers.json   allowlisting bob
-    bobdir/bob.mcp.json  MCP config defining the `praetor` server for bob
-and a bus must be running on PRAETOR_URL (default http://127.0.0.1:9440).
+    bobdir/bob.mcp.json  MCP config defining the `interlink` server for bob
+and a bus must be running on INTERLINK_URL (default http://127.0.0.1:9440).
 """
 import os, pty, select, time, re, subprocess, sys
 
-T = os.environ["PRAETOR_TEST_DIR"]
+T = os.environ["INTERLINK_TEST_DIR"]
 BIN = os.path.join(T, "bin")
-URL = os.environ.get("PRAETOR_URL", "http://127.0.0.1:9440")
+URL = os.environ.get("INTERLINK_URL", "http://127.0.0.1:9440")
 cap = []
 
 
@@ -50,8 +50,8 @@ def peer_sends(text):
         '{"jsonrpc":"2.0","method":"notifications/initialized"}',
         '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"bob","text":%s}}}' % _json(text),
     ]) + "\n"
-    env = dict(os.environ, PRAETOR_KEY=f"{T}/alice.key", PRAETOR_PEERS=f"{T}/alice-peers.json", PRAETOR_URL=URL)
-    subprocess.run([f"{BIN}/praetor-mcp"], input=reqs.encode(), env=env,
+    env = dict(os.environ, INTERLINK_KEY=f"{T}/alice.key", INTERLINK_PEERS=f"{T}/alice-peers.json", INTERLINK_URL=URL)
+    subprocess.run([f"{BIN}/interlink-mcp"], input=reqs.encode(), env=env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
 
 
@@ -72,7 +72,7 @@ def main():
     if pid == 0:
         os.chdir(f"{T}/bobdir")
         os.execvp("claude", ["claude", "--mcp-config", "bob.mcp.json",
-                             "--dangerously-load-development-channels", "server:praetor"])
+                             "--dangerously-load-development-channels", "server:interlink"])
         return
 
     pump(fd, 7)
@@ -80,7 +80,7 @@ def main():
     pump(fd, 5)
     os.write(fd, b"\r")   # "Yes, I trust this folder"
     pump(fd, 7)
-    os.write(fd, b"You are the agent bob. If a <channel source=\"praetor\"> message arrives, "
+    os.write(fd, b"You are the agent bob. If a <channel source=\"interlink\"> message arrives, "
                  b"act on it. Say WAITING now.\r")
     pump(fd, 12)
     print(">>> firing peer message", file=sys.stderr)

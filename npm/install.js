@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Postinstall: fetch the prebuilt praetor-mcp binary for this platform from the
+// Postinstall: fetch the prebuilt interlink-mcp binary for this platform from the
 // matching GitHub Release (tag `v<version>`) and drop it next to the launcher.
 //
 // Trust basis is the same as `cargo install --git`: HTTPS from a GitHub Release.
@@ -9,7 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const { version } = require("./package.json");
 
-const REPO = "wilfreddenton/praetor";
+const REPO = "wilfreddenton/interlink";
 
 // node platform+arch  ->  Rust target triple (must match release.yml asset names)
 const TARGETS = {
@@ -24,30 +24,30 @@ async function main() {
   const target = TARGETS[key];
   if (!target) {
     console.error(
-      `praetor-mcp: no prebuilt binary for ${key}. ` +
+      `interlink-mcp: no prebuilt binary for ${key}. ` +
         `Build from source instead: cargo install --git https://github.com/${REPO}`,
     );
     process.exit(1);
   }
 
   const ext = process.platform === "win32" ? ".exe" : "";
-  const asset = `praetor-mcp-${target}${ext}`;
+  const asset = `interlink-mcp-${target}${ext}`;
   const url = `https://github.com/${REPO}/releases/download/v${version}/${asset}`;
-  const dest = path.join(__dirname, "bin", `praetor-mcp-bin${ext}`);
+  const dest = path.join(__dirname, "bin", `interlink-mcp-bin${ext}`);
 
-  console.error(`praetor-mcp: downloading ${asset} (v${version}) ...`);
+  console.error(`interlink-mcp: downloading ${asset} (v${version}) ...`);
   const res = await fetch(url); // Node >=18: fetch follows GitHub's redirects
   if (!res.ok) {
-    console.error(`praetor-mcp: download failed (HTTP ${res.status}) from ${url}`);
+    console.error(`interlink-mcp: download failed (HTTP ${res.status}) from ${url}`);
     process.exit(1);
   }
   const buf = Buffer.from(await res.arrayBuffer());
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, buf, { mode: 0o755 });
-  console.error(`praetor-mcp: installed ${dest}`);
+  console.error(`interlink-mcp: installed ${dest}`);
 }
 
 main().catch((e) => {
-  console.error("praetor-mcp: install error:", e);
+  console.error("interlink-mcp: install error:", e);
   process.exit(1);
 });

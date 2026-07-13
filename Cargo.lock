@@ -841,6 +841,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "interlink-mcp"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "clap",
+ "dashmap",
+ "ed25519-dalek",
+ "getrandom",
+ "hyper",
+ "hyper-util",
+ "redb",
+ "reqwest",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower-service",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1024,32 +1050,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
  "zerovec",
-]
-
-[[package]]
-name = "praetor"
-version = "0.2.1"
-dependencies = [
- "anyhow",
- "axum",
- "base64",
- "clap",
- "dashmap",
- "ed25519-dalek",
- "getrandom",
- "hyper",
- "hyper-util",
- "redb",
- "reqwest",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tower-service",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

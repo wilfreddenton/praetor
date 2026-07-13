@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bound into every message signature. Bumped v1→v2 when `kind` entered the
 /// canonical encoding; a bump makes old and new signatures mutually unverifiable.
-const DOMAIN: &[u8] = b"praetor-v2\0";
+const DOMAIN: &[u8] = b"interlink-v2\0";
 
 /// What a signed message *is*. A plain `Message` is the everyday case; the pairing
 /// kinds are the only thing a non-peer may deliver (a knock), gated specially.
@@ -213,7 +213,7 @@ fn canonical(
 /// Bound into presence announcements. Separate from the message `DOMAIN` so the
 /// two version independently — a message-format change need not reissue the
 /// announcement format, and vice versa.
-const ANNOUNCE_DOMAIN: &[u8] = b"praetor-announce-v1\0";
+const ANNOUNCE_DOMAIN: &[u8] = b"interlink-announce-v1\0";
 
 /// A signed presence announcement, published to the bus roster. The `name` is a
 /// self-claim; identity is the key, so a peer [`verify`](Announcement::verify)s

@@ -6,15 +6,15 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `praetor-bus` — a loopback HTTP broker with one bounded FIFO per recipient
+- `interlink-bus` — a loopback HTTP broker with one bounded FIFO per recipient
   key; buffers for offline agents, holds no keys, verifies nothing.
-- `praetor-mcp` — the per-agent Claude Code **channel** server. Long-polls
+- `interlink-mcp` — the per-agent Claude Code **channel** server. Long-polls
   the bus and, for each message, runs the inbound gate (verify signature →
   allowlist → addressed-to-me → fresh → dedupe) before pushing
   `notifications/claude/channel`. Tools: `send_message`, `fetch_request`,
   `message_status`, `conversation_history`, `list_pending`, and live peer
   management (`add_peer`, `list_peers`, `remove_peer`).
-- `praetor-keygen` — generate an Ed25519 identity; the public key is the id.
+- `interlink-keygen` — generate an Ed25519 identity; the public key is the id.
 - **`identity`** — Ed25519, public-key-as-identity, domain-separated signing,
   `verify_strict`, freshness + replay protection.
 - **`policy`** — `peers.json`: per-peer grant of `"*"` (inline) or a capability
@@ -36,9 +36,9 @@ All notable changes to this project are documented here. The format is based on
   *knock* (identity + self-claimed name, no free text); everything else from a
   non-peer is still dropped. Grants are per-side; keys are pinned TOFU; the accept
   tools are operator-only (subagent-guarded). Adds a signed `kind` on messages,
-  which bumps the signing domain `praetor-v1 → v2` (a breaking change; all nodes
+  which bumps the signing domain `interlink-v1 → v2` (a breaking change; all nodes
   must be ≥0.2.0). Design: [`docs/DISCOVERY.md`](docs/DISCOVERY.md).
-- **Named inboxes (labels)** — a session launches with `PRAETOR_LABEL=<name>` and
+- **Named inboxes (labels)** — a session launches with `INTERLINK_LABEL=<name>` and
   receives only messages addressed to it via `send_message`'s `channel`. Lets
   several sessions share one identity, each with its own addressable stream.
   Routing is `key#label`; the signature still binds the bare key, so the trust
@@ -49,14 +49,14 @@ All notable changes to this project are documented here. The format is based on
 - `contrib/stop-hook.sh` — the pre-channels fallback, for environments where
   channels can't run.
 
-- `praetor-mcp` reconnects to the bus automatically after a sleep/reboot/crash
+- `interlink-mcp` reconnects to the bus automatically after a sleep/reboot/crash
   (retry-forever long-poll, no socket reuse across wake) and never crashes when
-  the bus is absent. A systemd user service (`contrib/praetor-bus.service`)
+  the bus is absent. A systemd user service (`contrib/interlink-bus.service`)
   auto-starts the bus on boot.
 - **`persist`** — a durable, keep-until-acked FIFO queue over
   [redb](https://crates.io/crates/redb) (pure Rust, ACID; no C). Shared by both
-  sides: the **bus** (`--db`/`PRAETOR_DB`) holds a message for an offline
-  recipient until it acks, and each **agent** (`PRAETOR_AGENT_DB`) holds an
+  sides: the **bus** (`--db`/`INTERLINK_DB`) holds a message for an offline
+  recipient until it acks, and each **agent** (`INTERLINK_AGENT_DB`) holds an
   unsent message in a durable outbox until the bus accepts it — so a restart of
   either loses nothing. Delivery is at-least-once, made safe by the existing
   `msg_id` dedupe. The agent's store also keeps a local conversation log,
@@ -66,10 +66,10 @@ All notable changes to this project are documented here. The format is based on
 
 ### Distribution
 - **Claude Code plugin** ([`plugin/`](plugin)) — bundles the MCP server, both
-  guard hooks, the `read-only` / `dev` capability agents, and the `praetor` skill
+  guard hooks, the `read-only` / `dev` capability agents, and the `interlink` skill
   (continuous collaboration as the default mode; grants as the tool ceiling);
-  installable via a marketplace (`/plugin marketplace add wilfreddenton/praetor`).
-- **npm wrapper** ([`npm/`](npm)) — `npx praetor-mcp` fetches the platform's
+  installable via a marketplace (`/plugin marketplace add wilfreddenton/interlink`).
+- **npm wrapper** ([`npm/`](npm)) — `npx interlink-mcp` fetches the platform's
   prebuilt static binary (the esbuild/Biome model), so the pure-Rust core gets
   the `npx` ergonomics the MCP ecosystem expects.
 - **Release workflow** — a tag builds and publishes static binaries for Linux

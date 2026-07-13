@@ -1,13 +1,13 @@
 {
   "mcpServers": {
-    "praetor": {
+    "interlink": {
       "type": "stdio",
-      "command": "${HOME}/.cargo/bin/praetor-mcp",
+      "command": "${HOME}/.cargo/bin/interlink-mcp",
       "env": {
-        "PRAETOR_KEY": "${HOME}/.config/praetor/alice.key",
-        "PRAETOR_PEERS": "${HOME}/.config/praetor/alice-peers.json",
-        "PRAETOR_URL": "http://127.0.0.1:9440",
-        "PRAETOR_AGENT_DB": "${HOME}/.local/state/praetor/alice-agent.redb"
+        "INTERLINK_KEY": "${HOME}/.config/interlink/alice.key",
+        "INTERLINK_PEERS": "${HOME}/.config/interlink/alice-peers.json",
+        "INTERLINK_URL": "http://127.0.0.1:9440",
+        "INTERLINK_AGENT_DB": "${HOME}/.local/state/interlink/alice-agent.redb"
       }
     }
   }

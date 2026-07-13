@@ -30,7 +30,7 @@ confirmations, fires a signed peer message, and checks the full loop:
 channel armed → event delivered → agent acted → signed reply reached the bus.
 
 ```bash
-PRAETOR_TEST_DIR=/path/to/workdir python3 live_channel_test.py
+INTERLINK_TEST_DIR=/path/to/workdir python3 live_channel_test.py
 ```
 
 See the module docstring for the workdir layout.

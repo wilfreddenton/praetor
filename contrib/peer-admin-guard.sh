@@ -16,7 +16,7 @@
 # Register with a matcher for both tools:
 #
 #   { "hooks": { "PreToolUse": [ {
-#       "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer|mcp__praetor__accept_pair|mcp__praetor__reject_pair",
+#       "matcher": "mcp__interlink__add_peer|mcp__interlink__remove_peer|mcp__interlink__accept_pair|mcp__interlink__reject_pair",
 #       "hooks": [ { "type": "command", "command": "/path/to/peer-admin-guard.sh" } ]
 #   } ] } }
 set -euo pipefail

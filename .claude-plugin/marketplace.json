@@ -1,10 +1,10 @@
 {
-  "name": "praetor",
+  "name": "interlink",
   "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code.",
   "owner": { "name": "Wilfred Denton", "url": "https://github.com/wilfreddenton" },
   "plugins": [
     {
-      "name": "praetor",
+      "name": "interlink",
       "source": "./plugin",
       "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels."
     }

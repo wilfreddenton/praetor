@@ -41,11 +41,11 @@ it answers — the natural trigger to build this.
 
 The shape is the standard one (email `In-Reply-To`/`References`, Slack `thread_ts`,
 Matrix `m.in_reply_to`, Nostr NIP-10 `root`/`reply` markers): carry the parent's
-`msg_id` (and optionally a thread `root`). praetor already has a stable per-message
+`msg_id` (and optionally a thread `root`). interlink already has a stable per-message
 `msg_id` to point at, so it's additive — an optional `reply_to` on `SignedMessage`,
 a `send_message` argument, and a threaded `conversation_history` render. The one
 care point is that `reply_to` must enter the signed `canonical()` encoding, which
-bumps the domain tag `praetor-v1\0` → `praetor-v2\0`.
+bumps the domain tag `interlink-v1\0` → `interlink-v2\0`.
 
 ## Semantic capability matching
 

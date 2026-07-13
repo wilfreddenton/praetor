@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "mcp__praetor__fetch_request",
+        "matcher": "mcp__interlink__fetch_request",
         "hooks": [
           {
             "type": "command",
@@ -11,7 +11,7 @@
         ]
       },
       {
-        "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer|mcp__praetor__accept_pair|mcp__praetor__reject_pair",
+        "matcher": "mcp__interlink__add_peer|mcp__interlink__remove_peer|mcp__interlink__accept_pair|mcp__interlink__reject_pair",
         "hooks": [
           {
             "type": "command",

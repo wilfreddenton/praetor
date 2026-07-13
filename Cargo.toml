@@ -1,13 +1,19 @@
 [package]
-name = "praetor"
+name = "interlink-mcp"
 version = "0.2.1"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/wilfreddenton/praetor"
+repository = "https://github.com/wilfreddenton/interlink"
 description = "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels"
 keywords = ["claude-code", "mcp", "agents", "ai", "channel"]
 categories = ["command-line-utilities", "asynchronous"]
 readme = "README.md"
+
+# `interlink` is taken on crates.io, so the package publishes as `interlink-mcp`
+# while the library keeps the short name used throughout the code (`use interlink::`).
+[lib]
+name = "interlink"
+path = "src/lib.rs"
 
 # Pure Rust, no C dependencies — enforced in CI.
 # TLS is deliberately absent: the bus binds 127.0.0.1, and authenticity comes
@@ -58,18 +64,18 @@ tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 
 [[bin]]
-name = "praetor-bus"
-path = "src/bin/praetor-bus.rs"
+name = "interlink-bus"
+path = "src/bin/interlink-bus.rs"
 required-features = ["bus"]
 
 [[bin]]
-name = "praetor-keygen"
-path = "src/bin/praetor-keygen.rs"
+name = "interlink-keygen"
+path = "src/bin/interlink-keygen.rs"
 required-features = ["identity"]
 
 [[bin]]
-name = "praetor-mcp"
-path = "src/bin/praetor-mcp.rs"
+name = "interlink-mcp"
+path = "src/bin/interlink-mcp.rs"
 required-features = ["agent"]
 
 [profile.release]

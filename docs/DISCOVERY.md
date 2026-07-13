@@ -1,13 +1,13 @@
 # Discovery & Pairing (design)
 
 > Status: **implemented** (v0.2.0). Bus roster + `discover`; the `kind` field
-> (signing domain `praetor-v2`); the gate's knock branch; and
+> (signing domain `interlink-v2`); the gate's knock branch; and
 > `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`.
 
 Today trust is configured out-of-band: you exchange public keys and hand-edit
 `peers.json` (or `add_peer`). This design lets nodes **start with no peers**,
 **find each other through the bus**, and **establish mutual trust with a
-human-gated handshake** — without ever weakening the property that makes praetor
+human-gated handshake** — without ever weakening the property that makes interlink
 worth using.
 
 ## The invariant this must not break
@@ -44,7 +44,7 @@ the roster from all of them; the union is deduped by pubkey.
 
 Messages gain a **`kind`** field: `message` (default, today's behavior),
 `pair_request`, `pair_accept`. `kind` (and the knock's name) enter the signed
-canonical encoding, so the signing domain bumps `praetor-v1` → `praetor-v2` (a
+canonical encoding, so the signing domain bumps `interlink-v1` → `interlink-v2` (a
 coordinated, pre-1.0 break).
 
 Flow, A pairing with B:
@@ -104,7 +104,7 @@ New tools: `discover`, `request_pair(target, grant)`, `list_pair_requests`,
 
 1. Registry: `/announce` + `/roster` on the bus; heartbeat announce + `discover`
    tool in the agent. (See who's online.)
-2. Wire format: `kind` field + `praetor-v2` domain; `pair_request`/`pair_accept`.
+2. Wire format: `kind` field + `interlink-v2` domain; `pair_request`/`pair_accept`.
 3. Gate: the knock branch + bounded pending-knock store (mirrors `Quarantine`).
 4. Tools: `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`,
    + the operator guard.

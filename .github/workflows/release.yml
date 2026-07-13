@@ -48,7 +48,7 @@ jobs:
 
       - name: Assert static (Linux musl)
         if: matrix.static
-        run: file target/${{ matrix.target }}/release/praetor-mcp | grep -qi static
+        run: file target/${{ matrix.target }}/release/interlink-mcp | grep -qi static
 
       - name: Stage assets
         id: stage
@@ -59,15 +59,15 @@ jobs:
           ext=""
           [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
 
-          # (1) The raw praetor-mcp binary, per target — one file the npm
+          # (1) The raw interlink-mcp binary, per target — one file the npm
           #     wrapper downloads and runs directly.
-          cp "$bindir/praetor-mcp$ext" "praetor-mcp-$target$ext"
+          cp "$bindir/interlink-mcp$ext" "interlink-mcp-$target$ext"
 
           # (2) A full archive with all three binaries — for humans, and for a
           #     plugin that bundles them instead of using the npm wrapper.
-          stage="praetor-$target"
+          stage="interlink-$target"
           mkdir "$stage"
-          cp "$bindir/praetor-mcp$ext" "$bindir/praetor-bus$ext" "$bindir/praetor-keygen$ext" "$stage/"
+          cp "$bindir/interlink-mcp$ext" "$bindir/interlink-bus$ext" "$bindir/interlink-keygen$ext" "$stage/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "$stage.zip" "$stage" >/dev/null
             echo "archive=$stage.zip" >> "$GITHUB_OUTPUT"
@@ -75,7 +75,7 @@ jobs:
             tar czf "$stage.tar.gz" "$stage"
             echo "archive=$stage.tar.gz" >> "$GITHUB_OUTPUT"
           fi
-          echo "binary=praetor-mcp-$target$ext" >> "$GITHUB_OUTPUT"
+          echo "binary=interlink-mcp-$target$ext" >> "$GITHUB_OUTPUT"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2

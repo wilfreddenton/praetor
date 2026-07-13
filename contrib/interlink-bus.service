@@ -1,12 +1,12 @@
-# systemd *user* service: keep the praetor bus running, restart it if it dies,
+# systemd *user* service: keep the interlink bus running, restart it if it dies,
 # and start it automatically on boot.
 #
 # Install:
 #   mkdir -p ~/.config/systemd/user
-#   cp contrib/praetor-bus.service ~/.config/systemd/user/
+#   cp contrib/interlink-bus.service ~/.config/systemd/user/
 #   # edit ExecStart below for your binary path and address
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now praetor-bus
+#   systemctl --user enable --now interlink-bus
 #   # to start at boot without logging in (a laptop that reboots):
 #   loginctl enable-linger "$USER"
 #
@@ -15,7 +15,7 @@
 # (Restart=always). Agents reconnect on their own either way.
 
 [Unit]
-Description=praetor message bus
+Description=interlink message bus
 After=network-online.target
 Wants=network-online.target
 
@@ -25,11 +25,11 @@ Wants=network-online.target
 # the most sleep/wake-resilient (doesn't depend on a specific interface being up
 # at start) but is only safe on a host with no public inbound — a laptop behind
 # NAT / on a tailnet.
-# StateDirectory creates %S/praetor (~/.local/state/praetor) if absent.
-StateDirectory=praetor
+# StateDirectory creates %S/interlink (~/.local/state/interlink) if absent.
+StateDirectory=interlink
 # --db makes queues durable: messages for an offline agent survive a bus
 # restart until acked. Drop it for an in-memory bus (backlog lost on restart).
-ExecStart=%h/.cargo/bin/praetor-bus --addr 127.0.0.1:9440 --db %S/praetor/bus.redb
+ExecStart=%h/.cargo/bin/interlink-bus --addr 127.0.0.1:9440 --db %S/interlink/bus.redb
 Restart=always
 RestartSec=2
 

@@ -1,6 +1,6 @@
-# praetor
+# interlink
 
-[![CI](https://github.com/wilfreddenton/praetor/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/praetor/actions/workflows/ci.yml)
+[![CI](https://github.com/wilfreddenton/interlink/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/interlink/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 **Secure agent-to-agent messaging and capability-scoped delegation for Claude Code.**
@@ -28,7 +28,7 @@ claude --dangerously-skip-permissions --dangerously-load-development-channels se
 That is: *any process that can reach the local broker can inject text into an
 agent running with every permission check turned off, and there is no way to
 know who sent it.* Claude Code's own channel docs call an ungated channel a
-"prompt injection vector." `praetor` is the answer to that — the thing that
+"prompt injection vector." `interlink` is the answer to that — the thing that
 lets you turn the permissions back **on**.
 
 ## The trust model
@@ -96,19 +96,19 @@ Two components, two lifecycles:
 
 ```
   Claude session ──┐                                    ┌── Claude session
-   praetor-mcp     ├──►  praetor-bus  (one broker)  ◄──┤    praetor-mcp
+   interlink-mcp     ├──►  interlink-bus  (one broker)  ◄──┤    interlink-mcp
    (per session)   ┘      routes by recipient key       └   (per session)
 ```
 
-- **`praetor-bus`** — the broker. You run **one**, somewhere reachable (a service;
+- **`interlink-bus`** — the broker. You run **one**, somewhere reachable (a service;
   see [Deploying](#deploying)). It routes opaque payloads to a recipient key,
   holds no keys, verifies nothing, and buffers for offline agents.
-- **`praetor-mcp`** — the agent-side MCP server. **One per Claude session**,
+- **`interlink-mcp`** — the agent-side MCP server. **One per Claude session**,
   started by Claude Code. It signs/verifies messages, enforces the trust gates,
   and long-polls the bus.
 
-An agent finds the bus through **`PRAETOR_URL`** (default `http://127.0.0.1:9440`).
-That's the whole wire between them — point every agent's `PRAETOR_URL` at your bus
+An agent finds the bus through **`INTERLINK_URL`** (default `http://127.0.0.1:9440`).
+That's the whole wire between them — point every agent's `INTERLINK_URL` at your bus
 and they can talk. (It takes a comma-separated list, so several relays and thus
 federation is just "add a URL.")
 
@@ -119,12 +119,12 @@ installs all three binaries) or a release archive, and run it once as a service.
 ## Install
 
 **Batteries included — the plugin.** One command bundles the MCP server (via
-`npx praetor-mcp`), both `PreToolUse` guard hooks, and the `read-only` capability
+`npx interlink-mcp`), both `PreToolUse` guard hooks, and the `read-only` capability
 agent — no `settings.json` editing:
 
 ```
-/plugin marketplace add wilfreddenton/praetor
-/plugin install praetor@praetor
+/plugin marketplace add wilfreddenton/interlink
+/plugin install interlink@interlink
 ```
 
 See [`plugin/`](plugin) for the one-time key/peers setup. Prefer to wire it up
@@ -132,32 +132,32 @@ yourself? The pieces:
 
 ```bash
 # pure Rust — no C toolchain, just a linker; installs the three binaries to ~/.cargo/bin
-cargo install --git https://github.com/wilfreddenton/praetor --locked
+cargo install --git https://github.com/wilfreddenton/interlink --locked
 ```
 
-Or `npx praetor-mcp` (the pure-Rust binary, delivered via npm — see [`npm/`](npm)).
+Or `npx interlink-mcp` (the pure-Rust binary, delivered via npm — see [`npm/`](npm)).
 
-Register the agent server once, so **every** Claude Code session can use praetor's
+Register the agent server once, so **every** Claude Code session can use interlink's
 tools (`send_message`, `message_status`, `conversation_history`, `list_pending`)
 with no per-launch flags:
 
 ```bash
-claude mcp add --scope user --transport stdio praetor \
-  -e PRAETOR_KEY=$HOME/.config/praetor/id.key \
-  -e PRAETOR_PEERS=$HOME/.config/praetor/peers.json \
-  -e PRAETOR_URL=http://127.0.0.1:9440 \
-  -e PRAETOR_AGENT_DB=$HOME/.local/state/praetor/agent.redb \
-  -- praetor-mcp
+claude mcp add --scope user --transport stdio interlink \
+  -e INTERLINK_KEY=$HOME/.config/interlink/id.key \
+  -e INTERLINK_PEERS=$HOME/.config/interlink/peers.json \
+  -e INTERLINK_URL=http://127.0.0.1:9440 \
+  -e INTERLINK_AGENT_DB=$HOME/.local/state/interlink/agent.redb \
+  -- interlink-mcp
 ```
 
-Set `PRAETOR_URL` to your bus (above it's `127.0.0.1:9440`, i.e. a bus on this
+Set `INTERLINK_URL` to your bus (above it's `127.0.0.1:9440`, i.e. a bus on this
 same machine — use the bus host's address otherwise). Don't have a bus yet? See
 Quickstart step 1.
 
 Prefer a file? Copy a [`config/*.mcp.json`](config) template (it uses `${HOME}`
 expansion, so it's not tied to any one machine) to a project root, or pass it with
 `--mcp-config`. The **Claude Desktop app** takes the same `mcpServers` block in
-Settings → Developer → Edit Config — but it can only *call* praetor's tools; arming
+Settings → Developer → Edit Config — but it can only *call* interlink's tools; arming
 the channel to *receive* pushed messages is a Claude Code feature (next section).
 
 ## Quickstart
@@ -165,11 +165,11 @@ the channel to *receive* pushed messages is a Claude Code feature (next section)
 ```bash
 # 1. Start the ONE bus everything connects to (run it once, ideally as a service;
 #    durable queue, loopback HTTP, no TLS — see Security). Agents reach it via
-#    PRAETOR_URL, which defaulted to this address in the Install snippet.
-praetor-bus --db ~/.local/state/praetor/bus.redb   # listens on 127.0.0.1:9440
+#    INTERLINK_URL, which defaulted to this address in the Install snippet.
+interlink-bus --db ~/.local/state/interlink/bus.redb   # listens on 127.0.0.1:9440
 
-# 2. An identity per agent; praetor-keygen prints the public key to share.
-praetor-keygen --out ~/.config/praetor/id.key
+# 2. An identity per agent; interlink-keygen prints the public key to share.
+interlink-keygen --out ~/.config/interlink/id.key
 ```
 
 List each peer's public key in your `peers.json` (see [`config/`](config)), then
@@ -177,7 +177,7 @@ launch the session as a **channel** so a peer's messages are pushed straight int
 it:
 
 ```bash
-claude --dangerously-load-development-channels server:praetor
+claude --dangerously-load-development-channels server:interlink
 ```
 
 That flag is required on every launch — it's the research-preview gate for custom
@@ -191,7 +191,7 @@ and register the `PreToolUse` guard
 `.claude/settings.json`.
 
 A capability agent that should **reply** to the peer must list
-`mcp__praetor__send_message` in its `tools:` (alongside `mcp__praetor__fetch_request`
+`mcp__interlink__send_message` in its `tools:` (alongside `mcp__interlink__fetch_request`
 to read the request) — without it the subagent can act but not answer, silently.
 The `read-only.md` template includes both.
 
@@ -208,8 +208,8 @@ One machine, many sessions. An identity (key) can host several **named inboxes**
 launch each session with a label and it receives only what's addressed to it.
 
 ```bash
-PRAETOR_LABEL=work     claude --dangerously-load-development-channels server:praetor
-PRAETOR_LABEL=proj-x   claude --dangerously-load-development-channels server:praetor
+INTERLINK_LABEL=work     claude --dangerously-load-development-channels server:interlink
+INTERLINK_LABEL=proj-x   claude --dangerously-load-development-channels server:interlink
 ```
 
 A peer targets one with `send_message`'s `channel`: `send_message(to="fedora",
@@ -224,7 +224,7 @@ Without labels, multiple sessions sharing one key are competing readers of one
 queue — an arbitrary session gets each message. Labels give each session its own
 addressable stream. This is **novel in this space**: the most-starred agent-chat
 MCP servers top out at one inbox per peer (and no cryptographic identity at all);
-per-endpoint sub-addressing on a single key is unique to praetor.
+per-endpoint sub-addressing on a single key is unique to interlink.
 
 ## Discovery & pairing
 
@@ -308,7 +308,7 @@ only system libraries. One feature-gated crate: `bus`, `agent`, `identity`,
 |---|---|---|---|---|
 | Agent Teams (built-in) | ✅ | lead-spawned only | permission relay | — |
 | claude-peers-mcp | ✅ | anyone on the broker | none (`--dangerously-skip-permissions`) | none |
-| **praetor** | ✅ | **signed + allowlisted keys** | **per-peer capability dial** | **quarantine + subagent** |
+| **interlink** | ✅ | **signed + allowlisted keys** | **per-peer capability dial** | **quarantine + subagent** |
 
 ## Deploying
 

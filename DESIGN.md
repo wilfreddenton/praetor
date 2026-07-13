@@ -3,7 +3,7 @@
 ## What this is
 
 Two independent Claude Code sessions exchange signed messages through a small
-local bus. Each runs a **channel server** (`praetor-mcp`) — an MCP server
+local bus. Each runs a **channel server** (`interlink-mcp`) — an MCP server
 that declares Claude Code's `claude/channel` capability, so its notifications are
 pushed straight into a live session. The interesting problem isn't moving bytes;
 it's letting an agent accept work from a peer it doesn't fully trust.
@@ -37,7 +37,7 @@ model's judgment about untrusted text.
 
 **1. Signature + allowlist (`identity`, `policy`, `agent::decide`).** Every
 message is signed over a domain-separated, length-prefixed encoding
-(`"praetor-v1\0" ‖ from ‖ to ‖ ts ‖ len(msg_id) ‖ msg_id ‖ len(text) ‖ text`)
+(`"interlink-v1\0" ‖ from ‖ to ‖ ts ‖ len(msg_id) ‖ msg_id ‖ len(text) ‖ text`)
 and verified with `verify_strict` (rejects small-order keys and non-canonical
 signatures). The authenticated key — never the claimed `from` string — is looked
 up in `peers.json`. Unknown key ⇒ dropped. `ts` and `msg_id` are inside the

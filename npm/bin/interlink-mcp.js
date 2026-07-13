@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// Launcher: exec the native praetor-mcp binary that install.js downloaded,
+// Launcher: exec the native interlink-mcp binary that install.js downloaded,
 // wiring stdio straight through (the MCP protocol runs over stdin/stdout).
 
 const { spawn } = require("child_process");
 const path = require("path");
 
 const ext = process.platform === "win32" ? ".exe" : "";
-const bin = path.join(__dirname, `praetor-mcp-bin${ext}`);
+const bin = path.join(__dirname, `interlink-mcp-bin${ext}`);
 
 const child = spawn(bin, process.argv.slice(2), { stdio: "inherit" });
 
 child.on("error", (e) => {
-  console.error(`praetor-mcp: could not launch the native binary: ${e.message}`);
-  console.error("praetor-mcp: reinstall the package, or build with `cargo install --git https://github.com/wilfreddenton/praetor`.");
+  console.error(`interlink-mcp: could not launch the native binary: ${e.message}`);
+  console.error("interlink-mcp: reinstall the package, or build with `cargo install --git https://github.com/wilfreddenton/interlink`.");
   process.exit(1);
 });
 
