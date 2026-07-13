@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bound into every message signature. Bumped v1→v2 when `kind` entered the
 /// canonical encoding; a bump makes old and new signatures mutually unverifiable.
-const DOMAIN: &[u8] = b"interlink-v2\0";
+const DOMAIN: &[u8] = b"interlink-v1\0";
 
 /// What a signed message *is*. A plain `Message` is the everyday case; the pairing
 /// kinds are the only thing a non-peer may deliver (a knock), gated specially.
