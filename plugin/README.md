@@ -11,7 +11,8 @@ Bundles the interlink setup for Claude Code into one install: the MCP server (vi
 ```
 
 That registers, in every session:
-- **MCP server** `interlink` — `send_message`, `list_peers`, `add_peer`,
+- **MCP server** `interlink` — `send_message` (with task tracking: `task_id` /
+  `status` / `in_reply_to`), `cancel_task`, `list_peers`, `add_peer`,
   `remove_peer`, `message_status`, `conversation_history`, `list_pending`,
   `discover`, and pairing (`request_pair` / `list_pair_requests` / `accept_pair`
   / `reject_pair`).

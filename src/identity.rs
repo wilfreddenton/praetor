@@ -18,9 +18,10 @@ use ed25519_dalek::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Bound into every message signature. Bumped v1→v2 when `kind` entered the
-/// canonical encoding; a bump makes old and new signatures mutually unverifiable.
-const DOMAIN: &[u8] = b"interlink-v1\0";
+/// Bound into every message signature. Bumped v1→v2 when task fields (`status`,
+/// `task_id`, `in_reply_to`) entered the canonical encoding; a bump makes old and
+/// new signatures mutually unverifiable.
+const DOMAIN: &[u8] = b"interlink-v2\0";
 
 /// What a signed message *is*. A plain `Message` is the everyday case; the pairing
 /// kinds are the only thing a non-peer may deliver (a knock), gated specially.
@@ -40,6 +41,55 @@ impl MessageKind {
             MessageKind::PairRequest => "pair_request",
             MessageKind::PairAccept => "pair_accept",
         }
+    }
+}
+
+/// The lifecycle marker on a task message. Absent on a plain chat turn, the
+/// opening request, or an answer; present on the executor's replies about a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Progress on a running task.
+    Update,
+    /// Blocked; needs an answer routed back to the requester's operator.
+    NeedsInput,
+    /// Terminal: finished successfully.
+    Result,
+    /// Terminal: finished with an error.
+    Failed,
+    /// Terminal: aborted by either side.
+    Canceled,
+}
+
+impl TaskStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskStatus::Update => "update",
+            TaskStatus::NeedsInput => "needs_input",
+            TaskStatus::Result => "result",
+            TaskStatus::Failed => "failed",
+            TaskStatus::Canceled => "canceled",
+        }
+    }
+
+    /// Parse the tool-facing string form; `None` for an unrecognized value.
+    pub fn from_tag(s: &str) -> Option<Self> {
+        match s {
+            "update" => Some(TaskStatus::Update),
+            "needs_input" => Some(TaskStatus::NeedsInput),
+            "result" => Some(TaskStatus::Result),
+            "failed" => Some(TaskStatus::Failed),
+            "canceled" => Some(TaskStatus::Canceled),
+            _ => None,
+        }
+    }
+
+    /// Terminal states close a task and cannot restart.
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            TaskStatus::Result | TaskStatus::Failed | TaskStatus::Canceled
+        )
     }
 }
 
@@ -104,7 +154,7 @@ impl AgentKey {
     /// Sign a plain message to `to`. `ts` and `msg_id` are covered, giving replay
     /// protection when paired with the receiver's dedupe set.
     pub fn sign(&self, to: AgentId, text: &str, ts: u64, msg_id: &str) -> SignedMessage {
-        self.sign_as(to, text, ts, msg_id, MessageKind::Message)
+        self.sign_full(to, text, ts, msg_id, MessageKind::Message, None, None, None)
     }
 
     /// Sign a message of a specific `kind` (plain, or a pairing knock/accept).
@@ -116,7 +166,35 @@ impl AgentKey {
         msg_id: &str,
         kind: MessageKind,
     ) -> SignedMessage {
-        let bytes = canonical(self.id(), to, ts, msg_id, text, kind);
+        self.sign_full(to, text, ts, msg_id, kind, None, None, None)
+    }
+
+    /// Sign a message carrying optional task-tracking metadata; all of it —
+    /// `status`, `task_id`, `in_reply_to` — is covered by the signature, so a
+    /// relay can't forge a `Canceled` or flip a status in flight.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_full(
+        &self,
+        to: AgentId,
+        text: &str,
+        ts: u64,
+        msg_id: &str,
+        kind: MessageKind,
+        task_id: Option<&str>,
+        status: Option<TaskStatus>,
+        in_reply_to: Option<&str>,
+    ) -> SignedMessage {
+        let bytes = canonical(
+            self.id(),
+            to,
+            ts,
+            msg_id,
+            text,
+            kind,
+            task_id,
+            status,
+            in_reply_to,
+        );
         let sig: Signature = self.0.sign(&bytes);
         SignedMessage {
             from: self.id().to_b64(),
@@ -125,6 +203,9 @@ impl AgentKey {
             ts,
             msg_id: msg_id.to_string(),
             kind,
+            task_id: task_id.map(str::to_string),
+            status,
+            in_reply_to: in_reply_to.map(str::to_string),
             sig: B64.encode(sig.to_bytes()),
         }
     }
@@ -151,6 +232,14 @@ pub struct SignedMessage {
     pub msg_id: String,
     #[serde(default)]
     pub kind: MessageKind,
+    /// Task-tracking metadata (all optional; absent on a plain chat turn). See
+    /// [`docs/TASKS.md`](../docs/TASKS.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<TaskStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
     pub sig: String,
 }
 
@@ -171,7 +260,17 @@ impl SignedMessage {
             .map_err(|_| anyhow!("signature must be {SIGNATURE_LENGTH} bytes"))?;
         let sig = Signature::from_bytes(&sig_bytes);
 
-        let bytes = canonical(from, to, self.ts, &self.msg_id, &self.text, self.kind);
+        let bytes = canonical(
+            from,
+            to,
+            self.ts,
+            &self.msg_id,
+            &self.text,
+            self.kind,
+            self.task_id.as_deref(),
+            self.status,
+            self.in_reply_to.as_deref(),
+        );
         from.as_verifying_key()
             .verify_strict(&bytes, &sig)
             .map_err(|_| {
@@ -187,6 +286,7 @@ impl SignedMessage {
 /// Domain-separated, length-prefixed. Length prefixes stop an attacker shifting
 /// bytes across the `msg_id`/`text` boundary to forge a different message under
 /// the same signature.
+#[allow(clippy::too_many_arguments)]
 fn canonical(
     from: AgentId,
     to: AgentId,
@@ -194,19 +294,27 @@ fn canonical(
     msg_id: &str,
     text: &str,
     kind: MessageKind,
+    task_id: Option<&str>,
+    status: Option<TaskStatus>,
+    in_reply_to: Option<&str>,
 ) -> Vec<u8> {
+    // Optional fields encode as empty when absent — unambiguous, since a real
+    // task_id/status/in_reply_to is never the empty string.
     let k = kind.as_str();
+    let st = status.map(TaskStatus::as_str).unwrap_or("");
+    let tid = task_id.unwrap_or("");
+    let irt = in_reply_to.unwrap_or("");
     let mut b = Vec::with_capacity(DOMAIN.len() + 88 + k.len() + msg_id.len() + text.len());
     b.extend_from_slice(DOMAIN);
     b.extend_from_slice(from.as_verifying_key().as_bytes());
     b.extend_from_slice(to.as_verifying_key().as_bytes());
     b.extend_from_slice(&ts.to_le_bytes());
-    b.extend_from_slice(&(k.len() as u32).to_le_bytes());
-    b.extend_from_slice(k.as_bytes());
-    b.extend_from_slice(&(msg_id.len() as u32).to_le_bytes());
-    b.extend_from_slice(msg_id.as_bytes());
-    b.extend_from_slice(&(text.len() as u32).to_le_bytes());
-    b.extend_from_slice(text.as_bytes());
+    // Every variable-length field is length-prefixed and in a fixed order, so no
+    // bytes can shift across a field boundary to forge a different message.
+    for field in [k, msg_id, text, st, tid, irt] {
+        b.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        b.extend_from_slice(field.as_bytes());
+    }
     b
 }
 
@@ -320,15 +428,45 @@ mod tests {
     fn length_prefixes_stop_boundary_shifting() {
         // ("ab", "c") and ("a", "bc") must not produce the same signed bytes.
         let (alice, bob) = (key(), key());
-        let a = canonical(alice.id(), bob.id(), 1, "ab", "c", MessageKind::Message);
-        let b = canonical(alice.id(), bob.id(), 1, "a", "bc", MessageKind::Message);
+        let a = canonical(
+            alice.id(),
+            bob.id(),
+            1,
+            "ab",
+            "c",
+            MessageKind::Message,
+            None,
+            None,
+            None,
+        );
+        let b = canonical(
+            alice.id(),
+            bob.id(),
+            1,
+            "a",
+            "bc",
+            MessageKind::Message,
+            None,
+            None,
+            None,
+        );
         assert_ne!(a, b);
     }
 
     #[test]
     fn domain_separation_is_bound_in() {
         let (alice, bob) = (key(), key());
-        let bytes = canonical(alice.id(), bob.id(), 1, "m1", "hi", MessageKind::Message);
+        let bytes = canonical(
+            alice.id(),
+            bob.id(),
+            1,
+            "m1",
+            "hi",
+            MessageKind::Message,
+            None,
+            None,
+            None,
+        );
         assert!(bytes.starts_with(DOMAIN));
     }
 
@@ -373,6 +511,38 @@ mod tests {
             forged_key.verify().is_err(),
             "can't reattribute to another key"
         );
+    }
+
+    #[test]
+    fn task_fields_are_covered_by_signature() {
+        let (alice, bob) = (key(), key());
+        let mut m = alice.sign_full(
+            bob.id(),
+            "on it",
+            1,
+            "m1",
+            MessageKind::Message,
+            Some("task-1"),
+            Some(TaskStatus::Update),
+            None,
+        );
+        assert!(m.verify().is_ok());
+        m.status = Some(TaskStatus::Canceled);
+        assert!(m.verify().is_err(), "status must be signed");
+
+        let mut m2 = alice.sign_full(
+            bob.id(),
+            "answer",
+            1,
+            "m2",
+            MessageKind::Message,
+            Some("task-1"),
+            None,
+            Some("q1"),
+        );
+        assert!(m2.verify().is_ok());
+        m2.in_reply_to = Some("q2".into());
+        assert!(m2.verify().is_err(), "in_reply_to must be signed");
     }
 
     #[test]

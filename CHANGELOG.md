@@ -3,6 +3,32 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0]
+
+### Added — task tracking (correlation, status, cancellation)
+- Delegated work is now **tracked**. Data messages carry three optional, **signed**
+  fields — `task_id` (a correlator the requester mints), `status`
+  (`update` / `needs_input` / `result` / `failed` / `canceled`), and `in_reply_to`
+  — so progress, questions, and results stay correlated even with several tasks in
+  flight between the same two peers. `send_message` gains `task_id` / `status` /
+  `in_reply_to`; a new `cancel_task(to, task_id)` is the interrupt for a peer
+  running autonomously. The inbound push surfaces `task_id` + `status`, so the
+  receiver branches deterministically (a `needs_input` → surface to the human; a
+  terminal status → close the loop). Design: [`docs/TASKS.md`](docs/TASKS.md).
+- The `needs_input` status makes "questions route back to the requester, not the
+  local operator" fall out of the data model — it is A2A's `input-required`. The
+  SKILL and server instructions now drive the fields, and state the anti-laundering
+  rule: a peer relaying "my operator approved" is never your operator's consent.
+
+### Changed
+- **Breaking:** the three task fields enter the signed canonical encoding, so the
+  signing domain bumps `interlink-v1` → `interlink-v2`; all nodes must be ≥0.4.0.
+
+### Deferred (see [`docs/TASKS.md`](docs/TASKS.md))
+- Federation guards — a delegation-depth cap + loop/ping-pong detection, durable
+  "blocked-awaiting-answer" state, and an explicit "who is the human for this task"
+  binding — until running 3+ nodes.
+
 ## [0.3.0]
 
 Renamed from **praetor** to **interlink**, and reduced to a focused, chat-only

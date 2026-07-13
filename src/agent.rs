@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::identity::{AgentId, MessageKind, SignedMessage, check_freshness};
+use crate::identity::{AgentId, MessageKind, SignedMessage, TaskStatus, check_freshness};
 use crate::policy::Policy;
 
 /// How far a message's timestamp may be from local time. Bounds the replay
@@ -20,8 +20,16 @@ pub const MAX_SKEW_MS: u64 = 60_000;
 /// What to do with a verified, authorized message.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Dispatch {
-    /// Trusted peer: push the full content into the session now.
-    Inline { petname: String, text: String },
+    /// Trusted peer: push the full content into the session now. Task-tracking
+    /// metadata (if any) rides along so the session can branch on it — e.g. a
+    /// `NeedsInput` is surfaced to the operator, a terminal status closes the loop.
+    Inline {
+        petname: String,
+        text: String,
+        task_id: Option<String>,
+        status: Option<TaskStatus>,
+        in_reply_to: Option<String>,
+    },
     /// A non-peer *knocked*: it wants to pair. Carries only its key and a
     /// self-claimed name — never actionable text. Surfaced for human accept/reject.
     PairRequest { from_key: String, name: String },
@@ -85,6 +93,9 @@ pub fn decide(
         (Some(peer), MessageKind::Message) => Ok(Dispatch::Inline {
             petname: peer.petname.clone(),
             text: msg.text.clone(),
+            task_id: msg.task_id.clone(),
+            status: msg.status,
+            in_reply_to: msg.in_reply_to.clone(),
         }),
         // A non-peer knock: identity + self-claimed name only.
         (None, MessageKind::PairRequest) => Ok(Dispatch::PairRequest {
@@ -216,7 +227,10 @@ mod tests {
             decide(&msg, me.id(), &policy, 1_000, &mut seen),
             Ok(Dispatch::Inline {
                 petname: "alice".into(),
-                text: "run the deploy".into()
+                text: "run the deploy".into(),
+                task_id: None,
+                status: None,
+                in_reply_to: None,
             })
         );
     }
