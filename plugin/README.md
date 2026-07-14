@@ -27,9 +27,10 @@ That registers, in every session:
     quiet, reminds the model to send a progress update. Debounced + task-gated; tune
     with `INTERLINK_PROGRESS_INTERVAL` (seconds, default 60; `0` disables).
   - `Stop` inbox-listener: in the channel-less default, keeps a background
-    `interlink-mcp wait` task armed so incoming messages still wake the agent.
-    Self-disables when `INTERLINK_CHANNELS=1`. Point it at a non-PATH binary with
-    `INTERLINK_WAIT_CMD` (e.g. `npx -y interlink-mcp wait`).
+    `interlink-mcp wait` task armed so incoming messages still wake the agent. The MCP
+    server tells the model the exact session-specific command (using its own binary
+    path, so it works even when launched via `npx`). Self-disables when
+    `INTERLINK_CHANNELS=1`.
 
 ## One-time setup
 

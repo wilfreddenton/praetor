@@ -1087,12 +1087,18 @@ impl ServerHandler for Agent {
         if !channel_mode() {
             // Channel-less mode: the model must arm THIS session's own inbox
             // listener. The command is session-specific (each session has its own
-            // inbox), so give it verbatim.
+            // inbox), so give it verbatim. Use our own executable path — a plugin
+            // launches the server via `npx`, so `interlink-mcp` is not on PATH; the
+            // running binary always is.
             let sid = self.inner.session.read().unwrap().session_id.clone();
+            let exe = std::env::current_exe()
+                .ok()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "interlink-mcp".to_string());
             instructions.push_str(&format!(
                 "\n\nCHANNEL-LESS MODE (this session): to hear incoming messages, keep this exact \
                  background task armed (Bash, run_in_background: true) — it is specific to THIS \
-                 session, do not change the id:\n    interlink-mcp wait --session {sid}\nIt blocks \
+                 session, do not change the id:\n    {exe} wait --session {sid}\nIt blocks \
                  until a peer message arrives, prints it as an <interlink> block, and exits, which \
                  wakes you. When it returns, handle the message and re-run the SAME command to \
                  re-arm. The Stop hook will remind you if it lapses."
