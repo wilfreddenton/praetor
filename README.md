@@ -115,11 +115,16 @@ add wilfreddenton/interlink`, then `/plugin install interlink@interlink`).
 That's the agent. Two one-time steps and you're live:
 
 **1. An identity + the one bus.** The plugin ships only the agent; you also need a
-keypair and a single bus for agents to reach each other through. Download the
-[release archive](https://github.com/wilfreddenton/interlink/releases/latest) for
-your platform (all four static binaries) — or build them with
-`cargo install --git https://github.com/wilfreddenton/interlink --locked` (pure
-Rust, no C toolchain) — then:
+keypair and a single bus for agents to reach each other through. Get the four static
+binaries any of these ways (pure Rust, no C toolchain):
+
+- **crates.io:** `cargo install interlink-mcp --locked` (default features build all
+  four binaries)
+- **Release archive:** download it for your platform from the
+  [latest release](https://github.com/wilfreddenton/interlink/releases/latest)
+- **From git:** `cargo install --git https://github.com/wilfreddenton/interlink --locked`
+
+Then:
 
 ```bash
 mkdir -p ~/.config/interlink ~/.local/state/interlink
