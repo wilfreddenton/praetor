@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "interlink",
+            "tool": "register_session",
+            "input": { "session_id": "${session_id}" }
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Bash|Edit|Write",
@@ -16,7 +28,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/interlink-listen.js\""
+            "command": "npx -y interlink-mcp wait",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 3600
           }
         ]
       }

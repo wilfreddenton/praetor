@@ -10,7 +10,7 @@
 //! pair, surfaced as a bounded, metadata-only notice.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -19,6 +19,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use fs2::FileExt;
 use interlink::agent::{Dedupe, Dispatch, PairTable, decide};
 use interlink::identity::{
     AgentId, AgentKey, Announcement, MessageKind, SessionInfo, SignedMessage, TaskStatus,
@@ -268,6 +269,12 @@ struct DiscoverArgs {
     /// Optional: restrict to one identity's live sessions — a petname, name,
     /// fingerprint, or full key. Omit to list every online node.
     peer: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RegisterSessionArgs {
+    /// Claude Code's session id (the SessionStart hook passes `${session_id}`).
+    session_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -575,32 +582,36 @@ impl Agent {
     }
 
     #[tool(
-        description = "Get the exact command to arm this session's channel-less message listener. \
-                       Call this, then run the returned command as a Bash background task \
-                       (run_in_background: true). It blocks until a peer message arrives, surfaces \
-                       it, and exits — which wakes you; then call arm_listener again and re-run to \
-                       re-arm. In channel mode there's nothing to arm."
+        description = "Bind this Claude session's id to interlink so peers can reach you and the \
+                       inbox listener finds your messages. Called automatically by the SessionStart \
+                       hook — you normally don't call it yourself. Idempotent."
     )]
-    async fn arm_listener(&self) -> Result<CallToolResult, McpError> {
-        if channel_mode() {
-            return Ok(CallToolResult::success(vec![ContentBlock::text(
-                "Channels are on — messages are pushed into this session directly; \
-                 there is no background listener to arm."
-                    .to_string(),
-            )]));
+    async fn register_session(
+        &self,
+        Parameters(args): Parameters<RegisterSessionArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let new_id = args.session_id.trim().to_string();
+        if new_id.is_empty() {
+            return Err(McpError::invalid_params("session_id is required", None));
         }
-        let sid = self.inner.session.read().unwrap().session_id.clone();
-        let exe = std::env::current_exe()
-            .ok()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "interlink-mcp".to_string());
-        let body = format!(
-            "Run this now as a Bash background task (run_in_background: true) to arm your inbox \
-             listener:\n\n    {exe} wait --session {sid}\n\nIt blocks until a peer message arrives, \
-             prints it as an <interlink> block, and exits — which wakes you. When it returns, \
-             handle the message, then call arm_listener again and re-run to keep listening."
-        );
-        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
+        let old_id = {
+            let mut s = self.inner.session.write().unwrap();
+            let old = s.session_id.clone();
+            s.session_id = new_id.clone();
+            old
+        };
+        if old_id != new_id {
+            // Migrate anything buffered under the provisional id, drop the
+            // provisional presence, and re-announce under the real id.
+            if let (Some(from), Some(to)) = (inbox_path(&old_id), inbox_path(&new_id)) {
+                migrate_inbox(&from, &to);
+            }
+            unregister_session_id(&self.inner, &old_id).await;
+            announce_now(&self.inner).await;
+        }
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            "registered session {new_id}"
+        ))]))
     }
 
     #[tool(
@@ -1120,17 +1131,14 @@ impl ServerHandler for Agent {
              the name.";
         let mut instructions = base.to_string();
         if !channel_mode() {
-            // Channel-less mode: to hear incoming messages the model keeps a
-            // background listener armed. Rather than bury the (session-specific,
-            // npx-path) command here, point at the `arm_listener` tool, which returns
-            // it ready to run — the Stop hook does the same.
+            // Channel-less mode: delivery is fully automatic (a SessionStart hook
+            // binds the session; a background Stop-hook listener wakes you). The
+            // model just needs to recognize and act on the arriving messages.
             instructions.push_str(
-                "\n\nCHANNEL-LESS MODE: incoming messages arrive via a background listener you keep \
-                 armed. To (re)arm it, call the `arm_listener` tool and run the command it returns \
-                 as a Bash background task (run_in_background: true) — it blocks until a peer \
-                 message arrives, surfaces it as an <interlink> block, and exits, which wakes you. \
-                 Do this at the start of a session and again after each message. The Stop hook \
-                 reminds you if the listener lapses.",
+                "\n\nIncoming peer messages are delivered automatically as \
+                 \"[interlink peer message from NAME] act on this:\" blocks that wake you when the \
+                 session is idle — you don't arm or poll anything. Treat each as a message from a \
+                 trusted peer: act on it and reply with send_message.",
             );
         }
         ServerInfo::new(caps).with_instructions(instructions)
@@ -1191,15 +1199,16 @@ fn progress_touch_last_update() {
 /// these run concurrently (one per relay), all sharing `inner` — so the dedupe
 /// set collapses a message that arrives via more than one relay to a single
 /// push. This is the whole of what federation needs.
-async fn inbound_loop(inner: Arc<Inner>, sink: Arc<Sink>, url: String, me_route: String) {
-    // `me` is the identity (the trust gate checks the signed `to` against it);
-    // `me_route` is the bus routing address — the key, or `key#label`.
+async fn inbound_loop(inner: Arc<Inner>, sink: Arc<Sink>, url: String) {
+    // `me` is the identity (the trust gate checks the signed `to` against it).
     let me = inner.key.id();
-    let me_b64 = me_route;
     // Track connection state so we log only on transitions, not every retry —
     // otherwise a bus that's down for a while spams a warning every backoff.
     let mut online = true;
     loop {
+        // Recompute the inbox route each iteration: `register_session` can switch
+        // the session id (provisional → Claude's), and the next poll must follow it.
+        let me_b64 = inner.my_route();
         let value = match poll_once(&inner.http, &url, &me_b64).await {
             Ok(v) => {
                 if !online {
@@ -1502,6 +1511,46 @@ async fn announce_now(inner: &Arc<Inner>) {
     }
 }
 
+/// Move any inbox lines buffered under a provisional session id to the real one, so
+/// a message received in the startup window (before `register_session`) isn't lost.
+fn migrate_inbox(from: &Path, to: &Path) {
+    let Ok(data) = std::fs::read(from) else {
+        return;
+    };
+    if data.is_empty() {
+        let _ = std::fs::remove_file(from);
+        return;
+    }
+    if let Some(dir) = to.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(to)
+    {
+        let _ = f.write_all(&data);
+    }
+    let _ = std::fs::remove_file(from);
+    let _ = std::fs::remove_file(from.with_extension("cursor"));
+}
+
+/// Drop a specific session id's presence from every relay (used when adopting the
+/// real session id, to retire the provisional one).
+async fn unregister_session_id(inner: &Arc<Inner>, session_id: &str) {
+    let body =
+        json!({ "pubkey": inner.key.id().to_b64(), "session": { "session_id": session_id } });
+    for url in &inner.urls {
+        let _ = inner
+            .http
+            .post(format!("{url}/unregister"))
+            .json(&body)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await;
+    }
+}
+
 /// Best-effort graceful presence removal on clean shutdown, so a peer learns the
 /// session is really gone (not just asleep) and re-picks right away.
 async fn unregister_now(inner: &Arc<Inner>) {
@@ -1583,10 +1632,12 @@ fn inbox_path(session: &str) -> Option<PathBuf> {
 }
 
 /// Where a verified inbound message is delivered to the model: a native Claude Code
-/// channel (push), or the local inbox queue the `wait` receiver drains.
+/// channel (push), or the local inbox queue the `wait` receiver drains. The inbox
+/// path is resolved from the *current* session id each time, so it follows a
+/// `register_session` switch (provisional → Claude's id).
 enum Sink {
     Channel(Box<rmcp::service::Peer<rmcp::RoleServer>>),
-    Inbox(PathBuf),
+    Inbox(Arc<Inner>),
 }
 
 impl Sink {
@@ -1603,8 +1654,11 @@ impl Sink {
             Sink::Channel(peer) => {
                 push(peer, content, sender, msg_id, task_id, status, in_reply_to).await
             }
-            Sink::Inbox(path) => {
-                append_inbox(path, content, sender, msg_id, task_id, status, in_reply_to)
+            Sink::Inbox(inner) => {
+                let sid = inner.session.read().unwrap().session_id.clone();
+                if let Some(path) = inbox_path(&sid) {
+                    append_inbox(&path, content, sender, msg_id, task_id, status, in_reply_to);
+                }
             }
         }
     }
@@ -1651,50 +1705,106 @@ fn append_inbox(
     }
 }
 
-/// Fallback receiver: block until this session's inbox has content past our cursor,
-/// print the new messages for the model, advance the cursor, and exit. Meant to run
-/// as a background task, re-armed by the Stop hook — so the task *completing* is what
-/// wakes a channel-less agent.
+/// How long a single `wait` invocation blocks before exiting 0 (re-armed on the
+/// next Stop). Kept under the hook's `timeout` so we control the clean exit.
+const WAIT_MAX_SECS: u64 = 3000;
+
+/// The channel-less inbox listener, run as an async `asyncRewake` Stop hook. Holds a
+/// single-instance lock, blocks until a real message lands in this session's inbox,
+/// prints it, and `exit 2`s to rewake the idle agent. On a duplicate or timeout it
+/// `exit 0`s — which does NOT rewake, so it's silent.
 async fn run_wait(w: &WaitArgs) -> Result<()> {
-    let session = w
+    if channel_mode() {
+        return Ok(()); // channels push directly; no inbox listener needed
+    }
+    let session = wait_session(w);
+    let path = inbox_path(&session).context("no state dir for the inbox")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+
+    // Single instance: an exclusive lock the server never takes. A second listener
+    // can't acquire it → exit 0 (silent; exit 0 doesn't rewake). flock releases on
+    // process death — even SIGKILL — so there's no stale-lock deadlock.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path.with_extension("lock"))
+        .context("opening listener lock")?;
+    if lock.try_lock_exclusive().is_err() {
+        return Ok(()); // already listening → exit 0
+    }
+
+    let cursor_path = path.with_extension("cursor");
+    let cursor = std::fs::read_to_string(&cursor_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(WAIT_MAX_SECS);
+    loop {
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if len > cursor {
+            let data = std::fs::read(&path).unwrap_or_default();
+            let new = data.get(cursor as usize..).unwrap_or(&[]);
+            let mut out = String::new();
+            for line in String::from_utf8_lossy(new).lines() {
+                if !line.trim().is_empty() {
+                    out.push_str(&render_inbox_line(line));
+                    out.push('\n');
+                }
+            }
+            let _ = std::fs::write(&cursor_path, len.to_string());
+            if !out.is_empty() {
+                // Deliver on BOTH streams — asyncRewake's stdout-vs-stderr behavior
+                // is fuzzy — then exit 2 to rewake the agent.
+                print!("{out}");
+                eprint!("{out}");
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().flush();
+                std::process::exit(2);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(()); // timeout → exit 0, re-armed on the next Stop
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+}
+
+/// The session id `wait` listens for: `--session` if given (manual/testing), else
+/// the `session_id` from the Stop-hook payload on stdin, else `main`.
+fn wait_session(w: &WaitArgs) -> String {
+    if let Some(s) = w
         .session
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("main")
-        .to_string();
-    let path = inbox_path(&session).context("no state dir for the inbox")?;
-    let cursor_path = path.with_extension("cursor");
-    let start = std::fs::read_to_string(&cursor_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    loop {
-        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if len > start {
-            let data = std::fs::read(&path).unwrap_or_default();
-            let new = data.get(start as usize..).unwrap_or(&[]);
-            for line in String::from_utf8_lossy(new).lines() {
-                if !line.trim().is_empty() {
-                    print_inbox_line(line);
-                }
-            }
-            let _ = std::fs::write(&cursor_path, len.to_string());
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(750)).await;
+    {
+        return s.to_string();
     }
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_to_string(&mut buf);
+    serde_json::from_str::<Value>(&buf)
+        .ok()
+        .and_then(|v| {
+            v.get("session_id")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".to_string())
 }
 
-/// Render one stored inbox line as a block the model reads like a channel event.
-fn print_inbox_line(line: &str) {
+/// Render one stored inbox message for the model, prefixed so it reads as an
+/// actionable peer message (not a hook error) on rewake.
+fn render_inbox_line(line: &str) -> String {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
-        println!("{line}");
-        return;
+        return line.to_string();
     };
     let get = |k: &str| v.get(k).and_then(|x| x.as_str());
     let sender = get("sender").unwrap_or("peer");
-    let mut attrs = format!(" sender=\"{sender}\"");
+    let mut attrs = String::new();
     for (k, label) in [
         ("msg_id", "msg_id"),
         ("task_id", "task"),
@@ -1705,10 +1815,10 @@ fn print_inbox_line(line: &str) {
             attrs.push_str(&format!(" {label}=\"{val}\""));
         }
     }
-    println!(
-        "<interlink{attrs}>\n{}\n</interlink>",
+    format!(
+        "[interlink peer message from {sender}] act on this:\n<interlink sender=\"{sender}\"{attrs}>\n{}\n</interlink>",
         get("content").unwrap_or("")
-    );
+    )
 }
 
 async fn push(
@@ -1820,11 +1930,6 @@ async fn main() -> Result<()> {
         summary: String::new(),
     };
 
-    // The bus routing address is this session's own inbox `key#session_id`: every
-    // message, including a pairing knock, lands on exactly one live session, so
-    // there is no shared mailbox and no fan-out. The signed `to` is still the bare
-    // key, so the trust gate is untouched.
-    let me_route = Route::new(key.id().to_b64(), &session.session_id).to_string();
     // Roster name defaults to the fingerprint — always something to show.
     let node_name = args
         .name
@@ -1883,26 +1988,23 @@ async fn main() -> Result<()> {
     let sink = if channel_mode() {
         Arc::new(Sink::Channel(Box::new(service.peer().clone())))
     } else {
-        let path = inbox_path(&inner.session.read().unwrap().session_id)
-            .context("no state dir for the inbox")?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).ok();
+        // Fresh provisional inbox per launch (so we never replay an old backlog);
+        // `register_session` migrates it to Claude's session id.
+        if let Some(path) = inbox_path(&inner.session.read().unwrap().session_id) {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).ok();
+            }
+            let _ = std::fs::write(&path, b"");
+            let _ = std::fs::remove_file(path.with_extension("cursor"));
+            tracing::info!(inbox = %path.display(), "channel-less mode: delivering to local inbox");
         }
-        let _ = std::fs::write(&path, b"");
-        let _ = std::fs::remove_file(path.with_extension("cursor"));
-        tracing::info!(inbox = %path.display(), "fallback mode: delivering to local inbox");
-        Arc::new(Sink::Inbox(path))
+        Arc::new(Sink::Inbox(inner.clone()))
     };
 
     // One inbound long-poll per relay; all share `inner`, so dedupe collapses a
     // message that arrives via more than one relay.
     for url in inner.urls.clone() {
-        tokio::spawn(inbound_loop(
-            inner.clone(),
-            sink.clone(),
-            url,
-            me_route.clone(),
-        ));
+        tokio::spawn(inbound_loop(inner.clone(), sink.clone(), url));
     }
 
     // The service ends when Claude closes the session (stdin EOF) or on a signal.
