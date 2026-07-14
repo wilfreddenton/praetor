@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.3]
+
+### Changed
+- **Release automation.** Tagging a version now publishes to crates.io **and** npm
+  automatically via Trusted Publishing (OIDC) — no long-lived token secrets, and npm
+  gets build provenance. (No user-facing or binary changes in this release.)
+
 ## [0.7.2]
 
 ### Fixed
