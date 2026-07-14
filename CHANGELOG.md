@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.1]
+
+### Added — intra-node sessions
+- **Two sessions on the same machine can chat**, addressed with
+  `send_message(to:"self", session:"<id>")`. They share one identity, so a message
+  from your own key is trusted **implicitly** — no pairing, no self-entry in
+  `peers.json` (only the holder of your secret key can produce such a signature, so
+  this grants nothing to anyone else). `discover` shows your own identity `[you]`
+  with all its live sessions, marking the calling one `← this session`.
+
+### Fixed
+- **A session can no longer address itself.** Its own session is excluded from
+  `discover`-based auto-routing, and an explicit self-target is refused; a defensive
+  inbound guard drops any self-to-self loopback as a backstop.
+
 ## [0.5.0]
 
 ### Added — many live sessions per node, individually addressable

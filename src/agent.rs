@@ -74,9 +74,14 @@ pub fn decide(
 
     // 3. Allowlist. A non-peer may deliver *only* a pairing knock; a plain
     //    message from one is dropped here, before it can even consume a dedupe
-    //    slot (so non-peers can't flood the replay set).
+    //    slot (so non-peers can't flood the replay set). One implicit exception:
+    //    a message from our *own* key is another live session on this same node —
+    //    same principal, so it's trusted without a `peers.json` entry. Only the
+    //    holder of our secret key can produce such a signature, so this grants
+    //    nothing to anyone else.
     let peer = policy.peer(from);
-    if peer.is_none() && msg.kind == MessageKind::Message {
+    let is_self = from == me;
+    if peer.is_none() && !is_self && msg.kind == MessageKind::Message {
         return Err(Reject::NotAllowlisted);
     }
 
@@ -92,6 +97,14 @@ pub fn decide(
     match (peer, msg.kind) {
         (Some(peer), MessageKind::Message) => Ok(Dispatch::Inline {
             petname: peer.petname.clone(),
+            text: msg.text.clone(),
+            task_id: msg.task_id.clone(),
+            status: msg.status,
+            in_reply_to: msg.in_reply_to.clone(),
+        }),
+        // Another session under our own identity (see is_self, above).
+        (None, MessageKind::Message) if is_self => Ok(Dispatch::Inline {
+            petname: "self".to_string(),
             text: msg.text.clone(),
             task_id: msg.task_id.clone(),
             status: msg.status,
@@ -244,6 +257,26 @@ mod tests {
         assert_eq!(
             decide(&msg, me.id(), &policy, 1_000, &mut seen),
             Err(Reject::NotAllowlisted)
+        );
+    }
+
+    #[test]
+    fn own_key_is_trusted_without_a_peers_entry() {
+        // Another session on the same node signs with our own key. It's admitted
+        // implicitly — no self-entry in peers.json — and shown as "self".
+        let me = AgentKey::generate().unwrap();
+        let policy = Policy::default(); // we are NOT in our own allowlist
+        let msg = me.sign(me.id(), "from my other session", 1_000, "m1");
+        let mut seen = Dedupe::new(16);
+        assert_eq!(
+            decide(&msg, me.id(), &policy, 1_000, &mut seen),
+            Ok(Dispatch::Inline {
+                petname: "self".into(),
+                text: "from my other session".into(),
+                task_id: None,
+                status: None,
+                in_reply_to: None,
+            })
         );
     }
 

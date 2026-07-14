@@ -180,7 +180,13 @@ A → [ a3f2c1 · ~/eden · git:eden · "installing Hunyuan3D deps" ]
 one live session you can omit `session` (it auto-routes); a reply sticks to the
 session that messaged you, so an ongoing conversation never re-picks. The **signed
 `to` is still the bare key**, so `#session_id` is only an unsigned routing hint and
-the trust gate is unchanged. The session store is in-memory, so it survives sleep
+the trust gate is unchanged.
+
+Two sessions on the **same machine** share one identity, so they can talk with
+`send_message(to:"self", session:"<id>")` — no pairing and no self-entry in
+`peers.json`, because it's the same principal (only the holder of your key can sign
+as it). A session can't address *itself*: it's excluded from `discover` routing and
+an explicit self-target is refused. The session store is in-memory, so it survives sleep
 (same id, drains its queue on wake) and a hard restart just mints a new id to
 re-pick. Full design: [`docs/SESSIONS.md`](docs/SESSIONS.md).
 
