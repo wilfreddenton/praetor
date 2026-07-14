@@ -1,9 +1,9 @@
 # Sessions: multiple live sessions per node (design)
 
-> Status: **spec — ready to build.** Fixes the "second session kills MCP tools"
-> crash and the inbox fan-out, and makes N concurrent interlink sessions per
+> Status: **implemented in 0.5.0.** Makes N concurrent interlink sessions per
 > machine first-class and addressable. The session-scoped announcement changes the
-> roster shape (a coordinated, pre-1.0 change); everything else is additive.
+> roster shape (a coordinated, pre-1.0 change), so all nodes must be ≥0.5.0 to see
+> each other in `discover`; already-paired peers still chat across the bump.
 
 ## The problem
 

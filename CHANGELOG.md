@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0]
+
+### Added — many live sessions per node, individually addressable
+- Every Claude Code session is now a **first-class, addressable endpoint**. Each
+  `interlink-mcp` mints a random `session_id` at startup and polls **its own inbox**
+  `key#session_id`, so there is no shared mailbox and no fan-out — a message,
+  including a pairing knock, lands on exactly one live session. Design:
+  [`docs/SESSIONS.md`](docs/SESSIONS.md).
+- **`discover` now groups by identity → live sessions**, each shown as
+  `session_id · cwd · git repo · summary`, so a human recognizes a session without
+  ever seeing the id. `send_message` gains a **`session`** arg; with exactly one
+  live session it **auto-routes**, otherwise it returns the list to pick from.
+- **`set_summary`** describes what a session is doing and registers it. Sessions are
+  **register-on-use** — a session announces only on its first `send_message` or a
+  `set_summary`, so idle/plain chats stay invisible to peers.
+- **Reply-stickiness:** every message carries an unsigned `reply_to = key#session_id`
+  hint, so a reply returns to the exact session that sent it and a conversation pins
+  to one desk. It **self-heals** across sleep (same id, drains its queue on wake) and
+  re-picks after a hard restart (new id).
+- **Graceful unregister** on clean session close (stdin EOF) or `SIGTERM` drops the
+  session's presence immediately, so a peer re-picks rather than waiting out the TTL.
+
+### Changed
+- **Breaking (roster shape):** the presence announcement now carries a **signed**
+  session descriptor (`session_id`, `cwd`, `git_root`, `summary`), and the bus keys
+  the roster by `pubkey#session_id`. Nodes must be ≥0.5.0 to see each other in
+  `discover`; already-paired peers still chat across the bump (message signing is
+  unchanged). The agent-side `INTERLINK_LABEL` / `send_message` `channel` mechanism
+  is superseded by sessions and removed.
+
 ## [0.4.2]
 
 ### Fixed

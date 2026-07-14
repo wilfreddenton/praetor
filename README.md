@@ -163,11 +163,26 @@ pairing on a *cryptographic* identity is rare among agent-chat MCP servers.
 
 ## Many sessions on one machine
 
-An identity (key) can host several sessions; launch each with a label
-(`INTERLINK_LABEL=work`) and a peer targets one via `send_message`'s `channel`.
-Routing is `key#label`; the **signed `to` is still the bare key**, so the trust
-gate is unchanged and a label is only an unsigned routing hint. No label = the
-default inbox.
+interlink installs as a user-scope plugin, so **every** Claude Code session runs
+its own `interlink-mcp` — and they're all addressable. Each mints a random
+`session_id` at startup and polls its own inbox `key#session_id`, so there's no
+shared mailbox and no fan-out. A session announces to the roster the moment it does
+interlink work (its first `send_message` or a `set_summary`), so idle chats stay
+invisible; `discover` then lists each identity with its **live sessions**
+(`session_id · cwd · git repo · summary`):
+
+```
+A → [ a3f2c1 · ~/eden · git:eden · "installing Hunyuan3D deps" ]
+    [ 71b0e4 · ~/site · git:site · "fixing the deploy" ]
+```
+
+`send_message(to:"A", session:"a3f2c1")` routes to that session. If A has exactly
+one live session you can omit `session` (it auto-routes); a reply sticks to the
+session that messaged you, so an ongoing conversation never re-picks. The **signed
+`to` is still the bare key**, so `#session_id` is only an unsigned routing hint and
+the trust gate is unchanged. The session store is in-memory, so it survives sleep
+(same id, drains its queue on wake) and a hard restart just mints a new id to
+re-pick. Full design: [`docs/SESSIONS.md`](docs/SESSIONS.md).
 
 ## See it without a Claude session
 

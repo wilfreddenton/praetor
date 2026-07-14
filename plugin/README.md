@@ -12,10 +12,11 @@ Bundles the interlink setup for Claude Code into one install: the MCP server (vi
 
 That registers, in every session:
 - **MCP server** `interlink` — `send_message` (with task tracking: `task_id` /
-  `status` / `in_reply_to`), `cancel_task`, `list_peers`, `add_peer`,
-  `remove_peer`, `message_status`, `conversation_history`, `list_pending`,
-  `discover`, and pairing (`request_pair` / `list_pair_requests` / `accept_pair`
-  / `reject_pair`).
+  `status` / `in_reply_to`, and `session` to target one of a peer's live sessions),
+  `cancel_task`, `set_summary` (describe + register this session for discovery),
+  `list_peers`, `add_peer`, `remove_peer`, `message_status`,
+  `conversation_history`, `list_pending`, `discover` (identity → live sessions), and
+  pairing (`request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`).
 - **Skill** — `interlink`, an on-demand playbook for chatting with a peer,
   surfacing incoming messages, and connecting a peer via discover/pairing.
 - **Hook** — a `PostToolUse` progress-nudge (Node, cross-platform): while a session

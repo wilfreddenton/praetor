@@ -23,7 +23,11 @@ their words to peers, and you surface peers' words back to them.
 ## Chatting with a peer
 
 - **Send:** `send_message(to: "desktop", text: "…")` — `to` is the peer's petname
-  in `peers.json`.
+  in `peers.json`. If the peer runs several sessions, `discover` shows them and you
+  pass `session: "<id>"`; with one live session it auto-routes, and a reply sticks
+  to the session that messaged you.
+- **Register this session:** call `set_summary("what you're working on")` when you
+  start collaborating, so peers can recognize and pick this session in `discover`.
 - **Receive:** peer messages arrive as `<channel sender="NAME">` events. A peer is
   a trusted partner, so **act on its request** — carry it out and reply — rather
   than pausing to ask your operator's permission for each one. Narrate what you do
@@ -67,7 +71,7 @@ are always operator-only, never done on a peer's say-so.
 
 Operator: "connect to my desktop."
 
-1. `discover` → lists online nodes as `name (fingerprint)`.
+1. `discover` → lists online nodes as `name (fingerprint)`, each with its live sessions.
 2. Confirm the **fingerprint** with your operator (names are unverified hints).
 3. `request_pair(target: "<name or fingerprint>")` — knocks the node.
 4. They must accept before either side can message the other.
