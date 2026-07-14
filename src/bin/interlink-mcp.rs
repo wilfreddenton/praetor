@@ -272,12 +272,6 @@ struct DiscoverArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct RegisterSessionArgs {
-    /// Claude Code's session id (the Stop hook passes `${session_id}`).
-    session_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 struct SetSummaryArgs {
     /// A short, human-readable description of what this session is doing (e.g.
     /// "installing Hunyuan3D deps"), shown to peers in `discover` so they can pick
@@ -579,39 +573,6 @@ impl Agent {
             format!("{} pending:\n{}", lines.len(), lines.join("\n"))
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
-    }
-
-    #[tool(
-        description = "Bind this Claude session's id to interlink so peers can reach you and the \
-                       inbox listener finds your messages. Called automatically by the Stop \
-                       hook — you normally don't call it yourself. Idempotent."
-    )]
-    async fn register_session(
-        &self,
-        Parameters(args): Parameters<RegisterSessionArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let new_id = args.session_id.trim().to_string();
-        if new_id.is_empty() {
-            return Err(McpError::invalid_params("session_id is required", None));
-        }
-        let old_id = {
-            let mut s = self.inner.session.write().unwrap();
-            let old = s.session_id.clone();
-            s.session_id = new_id.clone();
-            old
-        };
-        if old_id != new_id {
-            // Migrate anything buffered under the provisional id, drop the
-            // provisional presence, and re-announce under the real id.
-            if let (Some(from), Some(to)) = (inbox_path(&old_id), inbox_path(&new_id)) {
-                migrate_inbox(&from, &to);
-            }
-            unregister_session_id(&self.inner, &old_id).await;
-            announce_now(&self.inner).await;
-        }
-        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "registered session {new_id}"
-        ))]))
     }
 
     #[tool(
@@ -1202,13 +1163,14 @@ fn progress_touch_last_update() {
 async fn inbound_loop(inner: Arc<Inner>, sink: Arc<Sink>, url: String) {
     // `me` is the identity (the trust gate checks the signed `to` against it).
     let me = inner.key.id();
+    // The session id is fixed at startup (Claude's injected id, a pinned name, or a
+    // random fallback), so the inbox route `key#session_id` never changes — compute it
+    // once rather than per poll.
+    let me_b64 = inner.my_route();
     // Track connection state so we log only on transitions, not every retry —
     // otherwise a bus that's down for a while spams a warning every backoff.
     let mut online = true;
     loop {
-        // Recompute the inbox route each iteration: `register_session` can switch
-        // the session id (provisional → Claude's), and the next poll must follow it.
-        let me_b64 = inner.my_route();
         let value = match poll_once(&inner.http, &url, &me_b64).await {
             Ok(v) => {
                 if !online {
@@ -1511,46 +1473,6 @@ async fn announce_now(inner: &Arc<Inner>) {
     }
 }
 
-/// Move any inbox lines buffered under a provisional session id to the real one, so
-/// a message received in the startup window (before `register_session`) isn't lost.
-fn migrate_inbox(from: &Path, to: &Path) {
-    let Ok(data) = std::fs::read(from) else {
-        return;
-    };
-    if data.is_empty() {
-        let _ = std::fs::remove_file(from);
-        return;
-    }
-    if let Some(dir) = to.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(to)
-    {
-        let _ = f.write_all(&data);
-    }
-    let _ = std::fs::remove_file(from);
-    let _ = std::fs::remove_file(from.with_extension("cursor"));
-}
-
-/// Drop a specific session id's presence from every relay (used when adopting the
-/// real session id, to retire the provisional one).
-async fn unregister_session_id(inner: &Arc<Inner>, session_id: &str) {
-    let body =
-        json!({ "pubkey": inner.key.id().to_b64(), "session": { "session_id": session_id } });
-    for url in &inner.urls {
-        let _ = inner
-            .http
-            .post(format!("{url}/unregister"))
-            .json(&body)
-            .timeout(Duration::from_secs(3))
-            .send()
-            .await;
-    }
-}
-
 /// Best-effort graceful presence removal on clean shutdown, so a peer learns the
 /// session is really gone (not just asleep) and re-picks right away.
 async fn unregister_now(inner: &Arc<Inner>) {
@@ -1631,10 +1553,20 @@ fn inbox_path(session: &str) -> Option<PathBuf> {
     )
 }
 
+/// The session id Claude Code injects into a stdio MCP subprocess's environment
+/// (v2.1.154+). It equals the `session_id` hooks receive on stdin, so the server and
+/// the `wait` hook agree on one inbox without any handshake, and it is stable across
+/// the server restarts Claude performs within a session.
+fn claude_session_id() -> Option<String> {
+    std::env::var("CLAUDE_CODE_SESSION_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Where a verified inbound message is delivered to the model: a native Claude Code
-/// channel (push), or the local inbox queue the `wait` receiver drains. The inbox
-/// path is resolved from the *current* session id each time, so it follows a
-/// `register_session` switch (provisional → Claude's id).
+/// channel (push), or the local inbox queue the `wait` receiver drains, keyed by this
+/// session's id.
 enum Sink {
     Channel(Box<rmcp::service::Peer<rmcp::RoleServer>>),
     Inbox(Arc<Inner>),
@@ -1909,11 +1841,13 @@ async fn main() -> Result<()> {
         .ok()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    // Every session gets a random per-session id so concurrent sessions on one
-    // machine never share an inbox — including in fallback, where each session's
-    // `wait` receiver reads its own `inbox/<id>.jsonl`. `INTERLINK_SESSION` can pin a
-    // stable name instead (a peer then reaches it across restarts), but that's opt-in
-    // and the operator owns avoiding collisions.
+    // Session id, in priority order: an explicit `INTERLINK_SESSION` pin, then the
+    // id Claude Code injects into the MCP subprocess env (`CLAUDE_CODE_SESSION_ID`,
+    // v2.1.154+), then a random fallback for non-Claude usage. Preferring Claude's id
+    // means every restart of this session's server (Claude re-spawns it on config
+    // changes) shares one stable id, so a peer's reply always finds the same inbox and
+    // the `wait` hook — which reads the same id from its stdin payload — names the same
+    // `inbox/<id>.jsonl`. No provisional id, no rendezvous handshake.
     let session_id = match args
         .session
         .as_deref()
@@ -1921,7 +1855,10 @@ async fn main() -> Result<()> {
         .filter(|s| !s.is_empty())
     {
         Some(s) => s.to_string(),
-        None => mint_session_id()?,
+        None => match claude_session_id() {
+            Some(s) => s,
+            None => mint_session_id()?,
+        },
     };
     let session = SessionInfo {
         session_id,
@@ -1988,8 +1925,9 @@ async fn main() -> Result<()> {
     let sink = if channel_mode() {
         Arc::new(Sink::Channel(Box::new(service.peer().clone())))
     } else {
-        // Fresh provisional inbox per launch (so we never replay an old backlog);
-        // `register_session` migrates it to Claude's session id.
+        // Fresh inbox per launch so we never replay an old backlog. The session id is
+        // fixed for this process, so `wait` (reading the same id from its hook stdin)
+        // drains this exact file.
         if let Some(path) = inbox_path(&inner.session.read().unwrap().session_id) {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).ok();

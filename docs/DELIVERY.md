@@ -1,10 +1,11 @@
 # Message delivery model (design)
 
-> Status: **audited — building.** How a peer's message reaches the model in
-> interlink's two modes. The **default** is channel-less; **channel mode** is
-> opt-in. Behavior tags: `[DOCS]` (documented), `[TESTED]` (verified in a live
-> session this cycle), `[ASSUMED]` (still to verify). Findings from the delivery
-> audit (`audit-delivery-model` workflow) are folded in.
+> Status: **validated live.** How a peer's message reaches the model in interlink's
+> two modes. The **default** is channel-less; **channel mode** is opt-in. Behavior
+> tags: `[DOCS]` (documented), `[TESTED]` (verified in a live session this cycle),
+> `[ASSUMED]` (still to verify). An idle default-mode session was woken by a peer
+> message and replied end-to-end; the session-id rendezvous now rides
+> `CLAUDE_CODE_SESSION_ID` (v2.1.154+) rather than a `register_session` handshake.
 
 ## The problem
 
@@ -97,41 +98,29 @@ refuted-as-documented claim]`
 
 ## The session-id rendezvous
 
-Two ids name one session:
+The inbox is keyed by `session_id`. Two parties must agree on it: the **server** (it
+writes `inbox/<id>.jsonl`) and the **`wait` hook** (it drains that file). They agree
+for free, because both read Claude's own session id from the same source of truth:
 
-- **Claude's `session_id`** — assigned by Claude Code; **hooks** get it, the **MCP
-  server does not** `[DOCS: not set for stdio MCP subprocesses; Claude Code issues
-  #25642, #41836]`.
-- **interlink's id** — the server otherwise mints its own random one.
+- **Server:** Claude Code injects **`CLAUDE_CODE_SESSION_ID`** into every stdio MCP
+  subprocess's environment `[DOCS: Claude Code v2.1.154 — "Stdio MCP server
+  subprocesses now receive CLAUDE_CODE_SESSION_ID and CLAUDECODE=1"; resolves issue
+  #25642]`. The server reads it at startup and *is* that id. No handshake, no tool.
+- **`wait` hook:** reads `session_id` from its Stop-hook stdin payload `[DOCS]` — the
+  same value.
 
-The channel-less listener is a hook (has Claude's id); the inbox is keyed by the
-server's id. To make them match, **Claude's `session_id` becomes the id**, bridged
-to the server by an **`mcp_tool` Stop hook** that calls a new `register_session`
-tool:
+Priority for the server's id: an explicit `INTERLINK_SESSION` pin (manual/testing) →
+`CLAUDE_CODE_SESSION_ID` (the normal case) → a random fallback (non-Claude usage).
 
-```json
-{ "type": "mcp_tool", "server": "plugin:interlink:interlink", "tool": "register_session",
-  "input": { "session_id": "${session_id}" } }
-```
+**Stable across restarts** `[TESTED]`: Claude re-spawns the stdio server within a
+session (on config changes / reconnects). Because the id comes from the environment,
+**every instance shares it** — so a peer's `reply_to` always addresses the same
+inbox. (The earlier random-per-launch id diverged across restarts and orphaned
+replies; that whole class of bug is gone.)
 
-`[DOCS]` `mcp_tool` hooks call a named server's tool with `${session_id}`
-substitution, routed to this session's server — no model, no cwd-hash, no collision.
-The plugin-scoped server name is `plugin:<plugin>:<server>` `[DOCS]`. The `wait`
-listener independently gets the same id from its hook stdin.
-
-**Why Stop, not SessionStart** `[TESTED: fails at SessionStart; DOCS: expected]`:
-`SessionStart` hooks run **before** stdio MCP servers finish connecting, so an
-`mcp_tool` hook there fails with "server … not connected" on first run — documented
-behavior, not a bug. `register_session` therefore rides the **Stop** event (placed
-before the async `wait` command in the same hooks array): the synchronous `mcp_tool`
-runs first, on a connected server, then `wait` launches. It re-fires (idempotently)
-each Stop.
-
-**Reconcile the first-message race** `[audit MUST-FIX]`: `register_session` may not
-land before the first inbound. The server starts on a **provisional** id; on
-`register_session` it adopts Claude's id — re-announces `key#<id>`, and **migrates**
-`inbox/<provisional>.jsonl` → `inbox/<id>.jsonl` — so nothing queued in the startup
-window is lost.
+This replaces the previous `register_session` + `mcp_tool`-hook + provisional-id +
+`migrate_inbox` rendezvous entirely — the server has the real id from process start,
+so there is no startup window to reconcile.
 
 ---
 
@@ -139,14 +128,14 @@ window is lost.
 
 | Component | Type | Role |
 |---|---|---|
-| MCP server | stdio MCP | verify + route; buffer inbound to `inbox/<id>.jsonl`; send/discover/pair; hold + reconcile the bound `session_id` |
-| `register_session` | MCP tool | bind Claude's `session_id`, migrate provisional inbox |
-| Stop hook (1st) | `mcp_tool` | `register_session(${session_id})` — server is connected by Stop |
-| Stop hook (2nd) | `command`, `async`+`asyncRewake` | run `interlink-mcp wait` → block on inbox → `exit 2` on a real message |
+| MCP server | stdio MCP | reads `CLAUDE_CODE_SESSION_ID` as its id; verify + route; buffer inbound to `inbox/<id>.jsonl`; send/discover/pair |
+| Stop hook | `command`, `async`+`asyncRewake` | run `interlink-mcp wait` → block on inbox → `exit 2` on a real message |
 | `interlink-mcp wait` | CLI subcommand | single-instance (`flock`) listener; session from hook stdin; both-streams payload |
 
-Removed vs. the shipped design: the `arm_listener` tool, the `decision:block` nag
-hook, model-driven arming/re-arming.
+Removed vs. earlier iterations: the `register_session` tool, the `mcp_tool`
+SessionStart/Stop bridge, the provisional id + `migrate_inbox` reconcile, the
+`arm_listener` tool, and the `decision:block` nag hook — all obsoleted by
+`CLAUDE_CODE_SESSION_ID` (rendezvous) and the hook-is-the-listener design (arming).
 
 ## Audit results (checklist)
 
@@ -156,12 +145,9 @@ hook, model-driven arming/re-arming.
 | such a hook re-fires each Stop (auto re-arm) | `[TESTED]` ✅ |
 | instances are NOT deduped; they accumulate | `[TESTED]` ✅ → we `flock`-dedupe |
 | `exit 0`/non-2 does NOT rewake | `[DOCS]` ✅ |
-| `mcp_tool` hook: named server + `${session_id}`, this session's instance | `[DOCS]` ✅ |
-| `mcp_tool` hooks canNOT be async/asyncRewake (run synchronously) | `[TESTED]` ✅ → listener stays a command hook |
-| MCP stdio server cannot get `session_id` itself | `[DOCS]` ✅ |
-| `mcp_tool` hook at SessionStart fails — server not yet connected | `[TESTED]` ✅ + `[DOCS]` → register rides Stop instead |
-| plugin MCP server name in a hook is `plugin:<plugin>:<server>` | `[DOCS]` ✅ |
-| Stop fires after each turn, server connected by then; register is idempotent | `[DOCS]` ✅ |
+| stdio MCP server receives `CLAUDE_CODE_SESSION_ID` in its env (v2.1.154+) | `[DOCS]` + `[TESTED]` ✅ → server reads it directly |
+| that id equals the hook stdin `session_id` and is stable across restarts | `[TESTED]` ✅ (server + `wait` agree, no handshake) |
+| `mcp_tool` hook at SessionStart fails — server not yet connected | `[TESTED]` ✅ + `[DOCS]` (why we abandoned the hook bridge) |
 | command-hook timeout default 600s, overridable | `[DOCS]` ✅ |
 | `exit 2` documented as error/stderr, ignores stdout — but asyncRewake showed stdout | `[DOCS] vs [TESTED]` ⚠ → both-streams mitigation |
 | channel push silently dropped if off; undetectable | `[DOCS]` ✅ |
@@ -175,7 +161,7 @@ hook, model-driven arming/re-arming.
 - **Per-Stop cost:** the hook runs on every Stop (~2–7s/turn latency observed for
   hooks; `npx` resolve adds more). Acceptable for a chat listener; could be trimmed
   with a lock-check fast path or a cargo-installed binary.
-- **Undocumented reliance:** asyncRewake idle-wake, no-dedup, and re-arm are
-  `[TESTED]` but undocumented — add a version guard + startup telemetry that fails
-  loudly if wake/inject isn't observed, so a Claude Code update can't break it
-  silently.
+- **`CLAUDE_CODE_SESSION_ID` reliance:** documented for MCP servers (v2.1.154+), but
+  the fallback to a random id keeps non-Claude/older-CLI usage working. `wait` still
+  takes its id from hook stdin (documented), so the two never depend on the env var
+  being present in the *hook's* process.

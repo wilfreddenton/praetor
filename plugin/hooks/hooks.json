@@ -15,12 +15,6 @@
       {
         "hooks": [
           {
-            "type": "mcp_tool",
-            "server": "plugin:interlink:interlink",
-            "tool": "register_session",
-            "input": { "session_id": "${session_id}" }
-          },
-          {
             "type": "command",
             "command": "npx -y interlink-mcp wait",
             "async": true,
