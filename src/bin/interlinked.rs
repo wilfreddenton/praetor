@@ -19,13 +19,13 @@ fn main() {
 
     // A light preflight — an absent key is the usual "why is nothing working";
     // warn but still launch, since claude surfaces the MCP error too.
-    if let Some(key) = key_path() {
-        if !key.exists() {
-            eprintln!(
-                "interlinked: warning: no key at {} — run interlink-keygen first",
-                key.display()
-            );
-        }
+    if let Some(key) = key_path()
+        && !key.exists()
+    {
+        eprintln!(
+            "interlinked: warning: no key at {} — run interlink-keygen first",
+            key.display()
+        );
     }
 
     let mut cmd = Command::new("claude");
