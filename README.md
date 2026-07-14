@@ -12,6 +12,11 @@ chat with each other over a real trust model. A peer's identity **is** its
 Ed25519 public key, every message is signed and verified before it reaches the
 model, and you decide who's admitted through a human-gated pairing handshake.
 
+It runs on **plain `claude`** — no `--dangerously-load-development-channels` and no
+org `channelsEnabled`, both of which Claude Code channels require. Delivery defaults
+to a channel-less path (a background listener that wakes on incoming messages), with
+native channels as an opt-in enhancement (`interlinked`) where you have them.
+
 ## Why this exists
 
 Letting Claude Code sessions talk to each other is a crowded problem:
@@ -87,7 +92,7 @@ can talk. (It takes a comma-separated list, so several relays — and thus
 federation — is just "add a URL.")
 
 So installing the agent (below) is half of it: **you also need a bus running.** The
-plugin ships the agent; the bus comes from the release archive (all three binaries)
+plugin ships the agent; the bus comes from the release archive (all four binaries)
 or `cargo install`, and you run it once as a service.
 
 ## Install
@@ -107,7 +112,7 @@ That's the agent. Two one-time steps and you're live:
 **1. An identity + the one bus.** The plugin ships only the agent; you also need a
 keypair and a single bus for agents to reach each other through. Download the
 [release archive](https://github.com/wilfreddenton/interlink/releases/latest) for
-your platform (all three static binaries) — or build them with
+your platform (all four static binaries) — or build them with
 `cargo install --git https://github.com/wilfreddenton/interlink --locked` (pure
 Rust, no C toolchain) — then:
 
