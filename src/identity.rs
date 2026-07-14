@@ -413,11 +413,23 @@ fn announce_canonical(pubkey: AgentId, name: &str, session: &SessionInfo, ts: u6
     b
 }
 
-/// Reject messages whose timestamp is too far from now, bounding replay windows.
-pub fn check_freshness(ts: u64, now: u64, max_skew_ms: u64) -> Result<()> {
-    let delta = now.abs_diff(ts);
-    if delta > max_skew_ms {
-        bail!("message timestamp is {delta}ms from now (max {max_skew_ms}ms)");
+/// Reject messages whose timestamp is implausible. The bound is asymmetric: the
+/// **future** side is tight (clock skew — a message dated well ahead of now is a
+/// forgery/replay signal), while the **past** side is generous, because the bus is a
+/// durable keep-until-ack store and a legitimately delayed message (an offline or
+/// slow peer, a server-restart gap) must still be deliverable when it finally lands.
+pub fn check_freshness(ts: u64, now: u64, max_future_ms: u64, max_past_ms: u64) -> Result<()> {
+    if ts > now.saturating_add(max_future_ms) {
+        bail!(
+            "message timestamp is {}ms in the future (max {max_future_ms}ms)",
+            ts - now
+        );
+    }
+    if now > ts.saturating_add(max_past_ms) {
+        bail!(
+            "message timestamp is {}ms in the past (max {max_past_ms}ms)",
+            now - ts
+        );
     }
     Ok(())
 }
@@ -537,12 +549,27 @@ mod tests {
     }
 
     #[test]
-    fn freshness_bounds_replay_window() {
-        assert!(check_freshness(1_000, 1_500, 1_000).is_ok());
-        assert!(check_freshness(1_000, 5_000, 1_000).is_err());
+    fn freshness_is_asymmetric() {
+        // future skew 1s, past delay 10s.
         assert!(
-            check_freshness(5_000, 1_000, 1_000).is_err(),
-            "future ts too"
+            check_freshness(1_000, 1_500, 1_000, 10_000).is_ok(),
+            "recent"
+        );
+        // A tight future bound still rejects a message dated ahead of now.
+        assert!(
+            check_freshness(5_000, 1_000, 1_000, 10_000).is_err(),
+            "too far in the future"
+        );
+        // The generous past bound admits a legitimately delayed message that the old
+        // symmetric 1s window would have dropped.
+        assert!(
+            check_freshness(1_000, 6_000, 1_000, 10_000).is_ok(),
+            "5s late is fine with a 10s past bound"
+        );
+        // But not one older than the past bound.
+        assert!(
+            check_freshness(1_000, 12_000, 1_000, 10_000).is_err(),
+            "11s late exceeds the past bound"
         );
     }
 

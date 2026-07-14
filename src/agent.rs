@@ -13,9 +13,16 @@ use std::collections::{HashMap, VecDeque};
 use crate::identity::{AgentId, MessageKind, SignedMessage, TaskStatus, check_freshness};
 use crate::policy::Policy;
 
-/// How far a message's timestamp may be from local time. Bounds the replay
-/// window that the dedupe set must remember.
-pub const MAX_SKEW_MS: u64 = 60_000;
+/// How far ahead of local time a message may be dated — a tight clock-skew bound; a
+/// message from the future is a forgery/replay signal.
+pub const MAX_FUTURE_MS: u64 = 60_000;
+
+/// How long after signing a message may still be delivered. Generous, because the
+/// bus is a durable keep-until-ack store: an offline or slow peer (or a Claude Code
+/// stdio-server restart gap) can leave a legitimate message queued for a long time,
+/// and it must not be rejected as stale when it finally lands. The replay this widens
+/// is bounded in practice by the dedupe set and the trusted-tailnet threat model.
+pub const MAX_PAST_MS: u64 = 86_400_000; // 24h
 
 /// What to do with a verified, authorized message.
 #[derive(Debug, PartialEq, Eq)]
@@ -85,8 +92,9 @@ pub fn decide(
         return Err(Reject::NotAllowlisted);
     }
 
-    // 4. Fresh enough to bound replays.
-    check_freshness(msg.ts, now, MAX_SKEW_MS).map_err(|_| Reject::Stale)?;
+    // 4. Plausible timestamp: tight in the future (skew), generous in the past (the
+    //    durable bus may hold a legitimate message for a while before it's delivered).
+    check_freshness(msg.ts, now, MAX_FUTURE_MS, MAX_PAST_MS).map_err(|_| Reject::Stale)?;
 
     // 5. Not already seen. Do this after the cheap rejects so a replayed *valid*
     //    message is recorded only once and invalid ones never consume a slot.
@@ -185,9 +193,12 @@ impl PairTable {
     }
 }
 
-/// A bounded set of recently-seen `msg_id`s. Bounded because we only need to
-/// reject replays inside the freshness window; anything older is already
-/// rejected by [`check_freshness`], so unbounded memory would be pointless.
+/// A bounded set of recently-seen `msg_id`s. Its main job is collapsing the bus's
+/// at-least-once redelivery (the same message seen twice before it's acked), which is
+/// a near-term window, so a bounded LRU suffices. It is *not* sized to cover the full
+/// [`MAX_PAST_MS`] window: a replay older than this capacity but still within the past
+/// bound could slip through — an accepted tradeoff under the signed, trusted-tailnet
+/// threat model, in exchange for durable delivery to offline/slow peers.
 pub struct Dedupe {
     order: VecDeque<String>,
     seen: std::collections::HashSet<String>,
@@ -314,11 +325,21 @@ mod tests {
         let policy = policy_for(&alice);
         let msg = alice.sign(me.id(), "hi", 1_000, "m1");
         let mut seen = Dedupe::new(16);
-        let far_future = 1_000 + MAX_SKEW_MS + 1;
+        // Past the generous past bound → stale.
+        let long_after = 1_000 + MAX_PAST_MS + 1;
         assert_eq!(
-            decide(&msg, me.id(), &policy, far_future, &mut seen),
+            decide(&msg, me.id(), &policy, long_after, &mut seen),
             Err(Reject::Stale)
         );
+        // A future-dated message is rejected by the tight future bound.
+        let future_msg = alice.sign(me.id(), "hi", 1_000 + MAX_FUTURE_MS + 1, "m2");
+        assert_eq!(
+            decide(&future_msg, me.id(), &policy, 1_000, &mut seen),
+            Err(Reject::Stale)
+        );
+        // A message delivered a few minutes late (well within the past bound) is fine.
+        let ok_msg = alice.sign(me.id(), "hi", 1_000, "m3");
+        assert!(decide(&ok_msg, me.id(), &policy, 1_000 + 300_000, &mut seen).is_ok());
     }
 
     #[test]
