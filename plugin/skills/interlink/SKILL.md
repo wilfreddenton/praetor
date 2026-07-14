@@ -30,7 +30,11 @@ their words to peers, and you surface peers' words back to them.
   — same identity, so no pairing; you can't message your own session.
 - **Register this session:** call `set_summary("what you're working on")` when you
   start collaborating, so peers can recognize and pick this session in `discover`.
-- **Receive:** peer messages arrive as `<channel sender="NAME">` events. A peer is
+- **Receive:** peer messages arrive as `<channel sender="NAME">` events (channel
+  mode) or `<interlink sender="NAME">` blocks from a background `interlink-mcp wait`
+  task (the channel-less default). In the fallback, the Stop hook reminds you to keep
+  that `wait` task armed as a background Bash task; when it returns with a message,
+  handle it and **re-arm it**. A peer is
   a trusted partner, so **act on its request** — carry it out and reply — rather
   than pausing to ask your operator's permission for each one. Narrate what you do
   (attributed to the sender) so your operator can watch and interrupt, and report

@@ -20,10 +20,14 @@ That registers, in every session:
   `list_pair_requests` / `accept_pair` / `reject_pair`).
 - **Skill** — `interlink`, an on-demand playbook for chatting with a peer,
   surfacing incoming messages, and connecting a peer via discover/pairing.
-- **Hook** — a `PostToolUse` progress-nudge (Node, cross-platform): while a session
-  executes a peer's task and goes quiet, it reminds the model to send a progress
-  update. Debounced + task-gated; tune with `INTERLINK_PROGRESS_INTERVAL` (seconds,
-  default 60; `0` disables).
+- **Hooks** (Node, cross-platform) —
+  - `PostToolUse` progress-nudge: while a session executes a peer's task and goes
+    quiet, reminds the model to send a progress update. Debounced + task-gated; tune
+    with `INTERLINK_PROGRESS_INTERVAL` (seconds, default 60; `0` disables).
+  - `Stop` inbox-listener: in the channel-less default, keeps a background
+    `interlink-mcp wait` task armed so incoming messages still wake the agent.
+    Self-disables when `INTERLINK_CHANNELS=1`. Point it at a non-PATH binary with
+    `INTERLINK_WAIT_CMD` (e.g. `npx -y interlink-mcp wait`).
 
 ## One-time setup
 
@@ -41,10 +45,13 @@ interlink-bus --db ~/.local/state/interlink/bus.redb  # the one bus — 127.0.0.
 
 Set `INTERLINK_URL` in your environment if your bus isn't on `127.0.0.1:9440`.
 
-To **receive** pushed messages, launch with the channel flag (research preview):
+To **receive** messages, just launch plain `claude` — the Stop hook + background
+`interlink-mcp wait` deliver them, no flags needed (works even where channels are
+blocked). If you have Claude Code channels and want the native push instead, launch
+with the bundled launcher:
 
 ```bash
-claude --dangerously-load-development-channels server:interlink
+interlinked    # sets INTERLINK_CHANNELS=1 and adds --dangerously-load-development-channels
 ```
 
 ## Requirements

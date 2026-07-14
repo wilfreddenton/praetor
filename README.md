@@ -123,17 +123,22 @@ Run the bus once, ideally as a service (durable queue, loopback HTTP, no TLS —
 `http://127.0.0.1:9440`); point that at the bus host if the bus is elsewhere, and
 see [Deploying](#deploying) for a Tailscale setup.
 
-**2. Launch the session as a channel** so a peer's messages are pushed into it:
+**2. Launch — plain `claude` is all you need.** Just run `claude`; the plugin
+delivers incoming messages over the **channel-less fallback**: the server writes each
+verified message to a local inbox that a background `interlink-mcp wait` task drains,
+and a Stop hook keeps that listener armed. No flags, and it works even where Claude
+Code channels are disabled by org policy.
+
+If you *do* have Claude Code development channels and want the nicer native push,
+launch with **`interlinked`** instead of `claude`:
 
 ```bash
-claude --dangerously-load-development-channels server:interlink
+interlinked          # = INTERLINK_CHANNELS=1 claude --dangerously-load-development-channels plugin:interlink@interlink
 ```
 
-That flag is required on every launch — the research-preview gate for custom
-channels, with no in-session or config alternative. The server is already
-registered by the plugin, so no `--mcp-config` is needed. (The **Claude Desktop
-app** takes the same server and can *call* the tools, but arming a channel to
-*receive* pushed messages is Claude-Code-only.)
+That sets channel mode (the server pushes directly; the Stop hook self-disables) and
+passes the research-preview flag. Extra args forward to `claude`. Same trust model
+either way — channels vs. background-task is only *how* a message reaches the model.
 
 **Managing peers from chat.** `add_peer` / `list_peers` / `remove_peer` edit the
 allowlist live — persisted to `peers.json`, applied to the very next message, no
@@ -223,8 +228,11 @@ log.
 - **Admission is full trust.** An admitted peer's message enters your session and
   you may act on it. Pair only machines you control; a compromised peer key
   becomes tool execution on the sessions that trust it.
-- **Research preview.** Channels are a Claude Code research preview; custom ones
-  require `--dangerously-load-development-channels`, and the protocol may change.
+- **Delivery is channel-optional.** The default fallback (local inbox + background
+  `wait` + Stop hook) needs no special flags and works under any org policy. Native
+  channels are an opt-in enhancement (`interlinked`) and a Claude Code research
+  preview — custom ones require `--dangerously-load-development-channels` and the
+  protocol may change. The trust gate is identical on both paths.
 
 ## Pure Rust, cross-platform
 

@@ -3,6 +3,35 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0]
+
+### Added — works without Claude Code channels
+- **Channel-less delivery is now the default**, so interlink works with **plain
+  `claude`** and needs no `--dangerously-load-development-channels` and no
+  org `channelsEnabled` — which channels require and can't be detected from a server.
+  The MCP server writes each **verified** message (same trust gate) to a local inbox
+  queue; a new **`interlink-mcp wait`** subcommand blocks until a message lands,
+  prints it as an `<interlink sender="…">` block, and exits. A **`Stop` hook** keeps
+  that background `wait` task armed so a channel-less agent is still woken by incoming
+  messages (a background task *completing* is the only non-channel wake signal).
+- **`interlinked` launcher** (new binary) opts into native channels: it sets
+  `INTERLINK_CHANNELS=1` and starts `claude --dangerously-load-development-channels
+  plugin:interlink@interlink`, forwarding extra args. Use it when you have channels
+  and want the native push; otherwise just run `claude`.
+- **`INTERLINK_CHANNELS=1`** selects channel mode (push, random per-session id, Stop
+  hook self-disables). Default/unset selects fallback mode (inbox + `wait`, and a
+  **stable session name** — `INTERLINK_SESSION`, default `main` — so a peer reaches
+  the listener across restarts and the `wait` task + hook share a fixed inbox path).
+  The two paths are mutually exclusive per session, so a message is never delivered
+  twice.
+
+### Notes
+- Fallback is designed for one interlink session per machine (the channel-blocked
+  work case); run several by giving each a distinct `INTERLINK_SESSION`. Channel mode
+  keeps random per-session ids and multi-session addressing as before.
+- npm-only installs (no binary on `PATH`) should set `INTERLINK_WAIT_CMD="npx -y
+  interlink-mcp wait"` so the Stop hook re-arms the right command.
+
 ## [0.5.2]
 
 ### Changed
