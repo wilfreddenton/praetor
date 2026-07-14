@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.2]
+
+### Fixed
+- **Stale server instructions.** The `get_info` text still told the model the Stop
+  hook "reminds you to keep that task armed … re-arm it" — leftover from the old
+  model-driven arming, and contradicting the corrected line that delivery is
+  automatic. Rewritten to match the hook-is-the-listener design (you don't arm or
+  poll anything; a message just wakes you).
+
+### Docs
+- `README` offers `cargo install interlink-mcp` from crates.io as the primary
+  source build (alongside the release archive and git).
+- `demo.sh` delivery step fixed (bob's listener now runs in channel mode, so the
+  push actually shows against current binaries) and the demo cast/GIF re-recorded.
+
 ## [0.7.1]
 
 ### Fixed
