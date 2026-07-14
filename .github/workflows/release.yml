@@ -4,6 +4,13 @@ name: Release
 # binaries for every supported target and attach them to a GitHub Release. Those
 # assets are what the npm wrapper's postinstall downloads and what a plugin can
 # bundle — so this workflow is the single source of prebuilt binaries.
+#
+# After the binaries are attached, it also publishes to crates.io and npm — each
+# guarded on its token secret, so both steps skip cleanly until the secrets exist:
+#   - CRATES_IO_TOKEN  (crates.io API token)
+#   - NPM_TOKEN        (npm *automation* token — bypasses the interactive OTP)
+# Bump the version in Cargo.toml, npm/package.json and plugin.json to match the tag
+# before pushing it; the publish jobs use those files' versions.
 
 on:
   push:
@@ -84,3 +91,35 @@ jobs:
           files: |
             ${{ steps.stage.outputs.binary }}
             ${{ steps.stage.outputs.archive }}
+
+  # crates.io publish — runs only once the binaries are attached (so the release is
+  # whole), and only when the token secret is set. `cargo publish` verifies by
+  # building with default features, exactly like a local publish.
+  crates-io:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ secrets.CRATES_IO_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish
+        run: cargo publish --locked --token ${{ secrets.CRATES_IO_TOKEN }}
+
+  # npm publish — the wrapper whose postinstall downloads the just-attached binary.
+  # Needs an npm *automation* token (no interactive OTP). Guarded on the secret.
+  npm:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: npm publish
+        working-directory: npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
