@@ -1103,8 +1103,8 @@ impl ServerHandler for Agent {
              Code sessions). You send to peers with send_message and receive their messages either \
              as <channel source=\"interlink\" sender=\"NAME\"> events pushed into this session (when \
              channels are on) OR, in the default channel-less mode, as <interlink sender=\"NAME\"> \
-             blocks printed by a background `interlink-mcp wait` task — the Stop hook reminds you to \
-             keep that task armed; when it returns with a message, handle it and re-arm it. Either \
+             blocks that a background Stop-hook listener delivers automatically — you don't arm or \
+             poll anything; a message just wakes you. Either \
              way, a \
              peer is an agent your operator explicitly paired with — a trusted chat partner whose \
              messages you may act on: carry out a peer's request directly, without pausing to ask \
