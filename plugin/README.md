@@ -30,8 +30,11 @@ allowlist there:
 
 ```bash
 mkdir -p ~/.config/interlink ~/.local/state/interlink
-interlink-keygen --out ~/.config/interlink/id.key   # from `npx interlink-mcp`, or cargo install
-printf '{}\n' > ~/.config/interlink/peers.json       # then add peers via pairing or add_peer
+# interlink-keygen + interlink-bus come from the release archive or `cargo install
+# --git https://github.com/wilfreddenton/interlink --locked` (npm ships only the agent).
+interlink-keygen --out ~/.config/interlink/id.key    # prints your public key to share
+printf '{}\n' > ~/.config/interlink/peers.json        # then add peers via pairing or add_peer
+interlink-bus --db ~/.local/state/interlink/bus.redb  # the one bus — 127.0.0.1:9440
 ```
 
 Set `INTERLINK_URL` in your environment if your bus isn't on `127.0.0.1:9440`.

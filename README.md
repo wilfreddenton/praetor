@@ -86,70 +86,54 @@ An agent finds the bus through **`INTERLINK_URL`** (default
 can talk. (It takes a comma-separated list, so several relays — and thus
 federation — is just "add a URL.")
 
-So installing the agent (below) is half of it: **you also need a bus running.**
-The npm/plugin paths ship the agent; get the bus from `cargo install` (which
-installs all three binaries) or a release archive, and run it once as a service.
+So installing the agent (below) is half of it: **you also need a bus running.** The
+plugin ships the agent; the bus comes from the release archive (all three binaries)
+or `cargo install`, and you run it once as a service.
 
 ## Install
 
-**Batteries included — the plugin.** One command bundles the MCP server (via
-`npx interlink-mcp`) and the `interlink` skill — no `settings.json` editing:
+interlink ships as a **Claude Code plugin**. One command registers the MCP server
+(the pure-Rust `interlink-mcp` binary, fetched via `npx interlink-mcp`), the
+`interlink` skill, and the progress hook in **every** session — no `settings.json`
+editing:
 
 ```
 /plugin marketplace add wilfreddenton/interlink
 /plugin install interlink@interlink
 ```
 
-See [`plugin/`](plugin) for the one-time key/peers setup. Prefer to wire it up
-yourself? The pieces:
+That's the agent. Two one-time steps and you're live:
+
+**1. An identity + the one bus.** The plugin ships only the agent; you also need a
+keypair and a single bus for agents to reach each other through. Download the
+[release archive](https://github.com/wilfreddenton/interlink/releases/latest) for
+your platform (all three static binaries) — or build them with
+`cargo install --git https://github.com/wilfreddenton/interlink --locked` (pure
+Rust, no C toolchain) — then:
 
 ```bash
-# pure Rust — no C toolchain, just a linker; installs the three binaries to ~/.cargo/bin
-cargo install --git https://github.com/wilfreddenton/interlink --locked
+mkdir -p ~/.config/interlink ~/.local/state/interlink
+interlink-keygen --out ~/.config/interlink/id.key     # prints your public key to share
+printf '{}\n' > ~/.config/interlink/peers.json         # add peers via pairing or add_peer
+interlink-bus --db ~/.local/state/interlink/bus.redb   # the ONE bus — 127.0.0.1:9440
 ```
 
-Or `npx interlink-mcp` (the pure-Rust binary, delivered via npm — see [`npm/`](npm)).
+Run the bus once, ideally as a service (durable queue, loopback HTTP, no TLS — see
+[Security](#security)). Every agent finds it through **`INTERLINK_URL`** (default
+`http://127.0.0.1:9440`); point that at the bus host if the bus is elsewhere, and
+see [Deploying](#deploying) for a Tailscale setup.
 
-Register the agent server once, so **every** Claude Code session can use
-interlink's tools with no per-launch flags:
-
-```bash
-claude mcp add --scope user --transport stdio interlink \
-  -e INTERLINK_KEY=$HOME/.config/interlink/id.key \
-  -e INTERLINK_PEERS=$HOME/.config/interlink/peers.json \
-  -e INTERLINK_URL=http://127.0.0.1:9440 \
-  -- interlink-mcp
-```
-
-Set `INTERLINK_URL` to your bus (above it's a bus on this same machine — use the
-bus host's address otherwise). Prefer a file? Copy a
-[`config/*.mcp.json`](config) template (it uses `${HOME}` expansion) to a project
-root, or pass it with `--mcp-config`. The **Claude Desktop app** takes the same
-`mcpServers` block — but it can only *call* interlink's tools; arming the channel
-to *receive* pushed messages is a Claude Code feature (next section).
-
-## Quickstart
-
-```bash
-# 1. Start the ONE bus everything connects to (run it once, ideally as a service;
-#    durable queue, loopback HTTP, no TLS — see Security). Agents reach it via
-#    INTERLINK_URL, which defaulted to this address in the Install snippet.
-interlink-bus --db ~/.local/state/interlink/bus.redb   # listens on 127.0.0.1:9440
-
-# 2. An identity per agent; interlink-keygen prints the public key to share.
-interlink-keygen --out ~/.config/interlink/id.key
-```
-
-Add each peer (below, or via pairing), then launch the session as a **channel**
-so a peer's messages are pushed straight into it:
+**2. Launch the session as a channel** so a peer's messages are pushed into it:
 
 ```bash
 claude --dangerously-load-development-channels server:interlink
 ```
 
-That flag is required on every launch — it's the research-preview gate for custom
-channels, and there is no in-session or config way to arm it. (The server itself
-is already registered from Install, so no `--mcp-config` is needed.)
+That flag is required on every launch — the research-preview gate for custom
+channels, with no in-session or config alternative. The server is already
+registered by the plugin, so no `--mcp-config` is needed. (The **Claude Desktop
+app** takes the same server and can *call* the tools, but arming a channel to
+*receive* pushed messages is Claude-Code-only.)
 
 **Managing peers from chat.** `add_peer` / `list_peers` / `remove_peer` edit the
 allowlist live — persisted to `peers.json`, applied to the very next message, no
@@ -204,13 +188,15 @@ confirm the thing end to end:
 - **inline** — alice ↔ bob round-trip, signed, both directions;
 - **rejection** — a stranger's message is dropped, never pushed;
 - **durable delivery** — a message sent while the bus is down is queued and
-  delivered once it returns, surviving a restart of *either* side.
+  delivered once the bus returns, surviving a restart of the **bus**.
 
-Messages are held on **both** sides until acked — the bus keeps a message for an
-offline recipient, and each agent keeps an unsent message in a durable outbox —
-over a pure-Rust ACID store ([redb](https://crates.io/crates/redb)). Delivery is
-at-least-once, made safe by `msg_id` dedupe. The `message_status`,
-`conversation_history`, and `list_pending` tools expose the local log.
+The **bus** is the durable layer: it keeps a message for an offline recipient until
+acked, over a pure-Rust ACID store ([redb](https://crates.io/crates/redb)), so a bus
+restart loses nothing. Delivery is at-least-once, made safe by `msg_id` dedupe. Each
+**agent** store is in-memory — isolated per session (so concurrent sessions on one
+machine never collide) and intact across sleep, though not a hard restart. The
+`message_status`, `conversation_history`, and `list_pending` tools expose that local
+log.
 
 ## Security
 

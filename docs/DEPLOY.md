@@ -48,17 +48,17 @@ In each agent's `.mcp.json`, set `INTERLINK_URL` to the bus's MagicDNS name:
   "env": {
     "INTERLINK_KEY":      "/path/to/alice.key",
     "INTERLINK_PEERS":    "/path/to/alice-peers.json",
-    "INTERLINK_URL":      "http://busbox.your-tailnet.ts.net:9440",
-    "INTERLINK_AGENT_DB": "/path/to/alice-agent.redb"
+    "INTERLINK_URL":      "http://busbox.your-tailnet.ts.net:9440"
   }
 } } }
 ```
 
-`INTERLINK_AGENT_DB` is this agent's own store (a **separate** file from the bus's).
-It holds the durable outbound queue — a `send_message` issued while the bus is
-unreachable is saved and delivered automatically once it returns — and the local
-conversation log queried by `message_status`, `conversation_history`, and
-`list_pending`. Omit it and those become in-memory (lost on restart).
+The agent's own store — its outbound queue and the conversation log queried by
+`message_status`, `conversation_history`, and `list_pending` — is **always
+in-memory**. Every Claude session spawns its own `interlink-mcp`, so a shared
+on-disk store would be single-writer contention; in-memory keeps each session
+isolated (and survives sleep, since suspend freezes the process with RAM intact).
+The **bus** is the durable layer. (`INTERLINK_AGENT_DB` is accepted but ignored.)
 
 Then launch each session as a channel:
 
@@ -87,12 +87,14 @@ If the bus runs on a laptop that sleeps or shuts down, nothing needs babysitting
   `Restart=always` also brings it back if it ever dies. On *sleep/wake* the
   process is only frozen and thaws by itself — systemd isn't involved.
 
-- **Queues are durable** (with a db file on each side). Give the bus `--db`
-  (`INTERLINK_DB`) and each agent `INTERLINK_AGENT_DB`, and a restart of either loses
-  nothing: the bus holds a message until the recipient acks it, and an agent holds
-  an unsent message until the bus accepts it. Delivery is at-least-once; the
-  receiver dedupes by `msg_id`, so a redelivered message is harmless. Without a db
-  file the corresponding side is in-memory and drops its backlog on restart.
+- **The bus queue is durable** (give it `--db` / `INTERLINK_DB`): it holds a message
+  until the recipient acks it, so a bus restart loses nothing queued for an offline
+  agent. Delivery is at-least-once; the receiver dedupes by `msg_id`, so a
+  redelivered message is harmless. The **agent** side is in-memory — it survives
+  sleep (frozen RAM) but not a hard restart, so a message queued *while the bus was
+  unreachable* is the only loss window, and even that survives sleep. The bus is the
+  durable layer by design; the agent stays in-memory so concurrent sessions on one
+  machine don't collide on a single store.
 
 One honest caveat:
 
