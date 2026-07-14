@@ -97,15 +97,20 @@ or `cargo install`, and you run it once as a service.
 
 ## Install
 
-interlink ships as a **Claude Code plugin**. One command registers the MCP server
+interlink ships as a **Claude Code plugin**. Installing it registers the MCP server
 (the pure-Rust `interlink-mcp` binary, fetched via `npx interlink-mcp`), the
-`interlink` skill, and the progress hook in **every** session — no `settings.json`
-editing:
+`interlink` skill, and the hooks (progress-nudge + the channel-less inbox listener)
+in **every** session — no `settings.json` editing.
 
+From the `claude` CLI:
+
+```bash
+claude plugin marketplace add wilfreddenton/interlink
+claude plugin install interlink@interlink
 ```
-/plugin marketplace add wilfreddenton/interlink
-/plugin install interlink@interlink
-```
+
+Or the same two commands as slash commands inside a session (`/plugin marketplace
+add wilfreddenton/interlink`, then `/plugin install interlink@interlink`).
 
 That's the agent. Two one-time steps and you're live:
 

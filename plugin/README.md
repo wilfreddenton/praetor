@@ -5,9 +5,11 @@ Bundles the interlink setup for Claude Code into one install: the MCP server (vi
 
 ## Install
 
-```
-/plugin marketplace add wilfreddenton/interlink
-/plugin install interlink@interlink
+From the `claude` CLI (or the same as `/plugin …` slash commands in a session):
+
+```bash
+claude plugin marketplace add wilfreddenton/interlink
+claude plugin install interlink@interlink
 ```
 
 That registers, in every session:
