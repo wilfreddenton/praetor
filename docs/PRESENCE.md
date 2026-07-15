@@ -1,6 +1,6 @@
 # Session presence & lifecycle (design)
 
-> Status: **design of record — not yet implemented.** How interlink should track a
+> Status: **implemented.** How interlink tracks a
 > session's liveness across close, sleep, and crash, so a peer routes to the right
 > place and isn't silently black-holed. Companion to [`DELIVERY.md`](./DELIVERY.md)
 > (which covers the last-hop *delivery* mechanics). Behavior tags: `[TESTED]`
@@ -162,10 +162,12 @@ continuity never silently hides that a live option was available.
 
 ## Future / optional (not required for this design)
 
-- **Goodbye-on-close push** to sticky peers (see policy above) — reliable on graceful
-  close; additive. Bonus interaction: a received goodbye lets the peer **clear its sticky
-  pointer** for that session immediately, so it stops preferring a now-gone session
-  instead of waiting to notice it's `gone` on the next send.
+- **Goodbye-on-close push** — **implemented.** On graceful close the session sends a
+  signed goodbye to its sticky peers (reliable on the ~1–40 ms close path) so an idle
+  peer is told rather than discovering it on its next send. Possible follow-up: have a
+  received goodbye let the peer **clear its sticky pointer** for that session
+  immediately, so it stops preferring a now-gone session instead of waiting to notice
+  it's `gone` on the next send.
 - **End-to-end acknowledgment — considered and dropped.** A recipient-signed ACK
   (`message_status` showing "acknowledged by peer" vs. "sent to bus only") was weighed
   as the answer to "did my message land?", but it's largely redundant here: the

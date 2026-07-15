@@ -224,6 +224,7 @@ impl AgentKey {
             session: session.clone(),
             ts,
             sig: B64.encode(sig.to_bytes()),
+            age_ms: None,
         }
     }
 }
@@ -371,6 +372,12 @@ pub struct Announcement {
     pub session: SessionInfo,
     pub ts: u64,
     pub sig: String,
+    /// Age since last refresh, stamped by the bus on `/roster` (never signed, so it's
+    /// outside [`announce_canonical`] and ignored by [`verify`](Announcement::verify)).
+    /// The client classifies a session live vs. away from it. Absent on a freshly-signed
+    /// announcement and on older buses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
 }
 
 impl Announcement {

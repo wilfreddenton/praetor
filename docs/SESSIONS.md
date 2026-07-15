@@ -99,15 +99,25 @@ The roster is session-scoped. A live session heartbeats a **signed** announcemen
 `{ pubkey, session_id, cwd, git_root, summary, ts, sig }`; the bus groups by
 `pubkey`, so `/roster` returns each identity → its live sessions.
 
-Removal is two things, on two clocks:
-- **Presence — short TTL (~90s).** Miss the heartbeat window → dropped from the
-  roster (stops showing in `discover`). This is the only liveness signal.
-- **Queue — long retention.** The inbox `key#session_id` is **NOT** dropped when
-  presence expires — that's the keep-until-ack point, and it's what lets a sleeping
-  session get its messages on wake. It's bounded (drop-oldest cap + a long sweep),
-  so a truly-abandoned inbox is a small, self-limiting leak.
-- **Graceful unregister** on `SIGTERM` (clean Claude-session close) removes presence
-  *immediately*, so a peer learns the session is really gone (not just sleeping).
+Presence is **three states on two clocks** — see [`PRESENCE.md`](./PRESENCE.md) for
+the full design and rationale:
+- **live** — heartbeat age `< 90s`. Fresh, actively heartbeating.
+- **away** — silent past 90s but retained up to `AWAY_RETAIN_MS` (~3 days). A slept
+  laptop stays **away**, not evicted: `route_session` keeps routing its mail to it
+  (it drains on wake) instead of misrouting to an awake sibling. `discover` shows it
+  as `away (last seen …)`.
+- **gone** — an explicit unregister **or** age past the ~3-day retention. Removed from
+  the roster.
+- **Queue — long retention, independent of presence.** The inbox `key#session_id` is
+  **NOT** dropped when presence goes away/gone — that's the keep-until-ack point, and
+  it's what lets a sleeping session get its messages on wake. It's bounded (drop-oldest
+  cap + a long sweep), so a truly-abandoned inbox is a small, self-limiting leak.
+- **Graceful unregister** on `SIGTERM` (clean Claude-session close) makes the session
+  **gone** *immediately* — the authoritative "really closed, not just sleeping" signal —
+  and optionally sends a **goodbye** to sticky peers so an idle peer is told rather than
+  discovering it on its next send.
+
+The through-line: **silence ≠ death; unregister = death.**
 
 ## Discovery & addressing
 
@@ -139,7 +149,9 @@ daemon, nothing handles a knock otherwise.
   offline — queued," not a failure.
 - **Sleep → wake: self-heals.** The frozen process wakes as the **same** in-memory
   `session_id`, resumes polling its inbox, **drains the messages queued during the
-  sleep**, and re-heartbeats. Seamless; no retry needed.
+  sleep**, and re-heartbeats. Seamless; no retry needed. During the sleep it stays
+  **away** (not evicted), so peers keep routing to it and see it as "asleep" rather
+  than gone.
 - **Clean close: immediate.** Graceful unregister tells peers the session is gone,
   so they re-pick right away.
 - **Server restart within a session: same id.** Claude re-spawns the stdio server
@@ -174,4 +186,5 @@ daemon, nothing handles a knock otherwise.
 2. Session-scoped signed announcement + roster grouping; `discover` renders
    sessions; `set_summary`; register-on-start; graceful unregister.
 3. `session` arg + auto-route-if-one; `reply_to` stickiness; the recovery behavior
-   (queue-not-error; sleep-heal; re-pick).
+   (queue-not-error; sleep-heal; re-pick). Two-tier presence (live/away/gone) and
+   goodbye-on-close land here — see [`PRESENCE.md`](./PRESENCE.md).

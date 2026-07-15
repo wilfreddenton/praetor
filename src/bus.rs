@@ -26,9 +26,12 @@ use crate::store::Store;
 
 pub const DEFAULT_RECV_TIMEOUT_MS: u64 = 25_000;
 
-/// How long a presence announcement stays in the roster without a refresh. Nodes
-/// re-announce on a heartbeat, so the roster reflects who is *currently* online.
-pub const ROSTER_TTL_MS: u64 = 90_000;
+/// How long a presence announcement is *retained* without a refresh. Generous —
+/// covering a multi-day laptop sleep — because a silent session may just be asleep,
+/// not gone (a graceful close removes it immediately via `/unregister`). Clients
+/// classify each entry live-vs-away from the `age_ms` the roster reports; this bound
+/// only decides when a long-silent entry is finally dropped. See `docs/PRESENCE.md`.
+pub const AWAY_RETAIN_MS: u64 = 3 * 24 * 60 * 60 * 1_000; // 3 days
 
 /// Cap on distinct roster entries, so an announcement flood can't grow it without
 /// limit. Far above any real mesh; expired entries are pruned first.
@@ -73,7 +76,7 @@ impl Broker {
     /// beyond the routing key).
     pub fn announce(&self, key: String, announcement: Value, now: u64) {
         self.roster
-            .retain(|_, (_, at)| now.saturating_sub(*at) < ROSTER_TTL_MS);
+            .retain(|_, (_, at)| now.saturating_sub(*at) < AWAY_RETAIN_MS);
         if self.roster.len() >= ROSTER_CAP && !self.roster.contains_key(&key) {
             return; // full of live entries; drop the newcomer rather than evict
         }
@@ -88,12 +91,25 @@ impl Broker {
         self.roster.remove(key);
     }
 
-    /// The live (non-expired) announcements.
+    /// The retained announcements, each stamped with an unsigned `age_ms` (how long
+    /// since its last refresh) so the client can classify it live vs. away. The
+    /// announcement's signed fields are untouched — `age_ms` is additive and ignored
+    /// by signature verification.
     pub fn roster(&self, now: u64) -> Vec<Value> {
         self.roster
             .iter()
-            .filter(|e| now.saturating_sub(e.value().1) < ROSTER_TTL_MS)
-            .map(|e| e.value().0.clone())
+            .filter_map(|e| {
+                let (ann, at) = e.value();
+                let age = now.saturating_sub(*at);
+                if age >= AWAY_RETAIN_MS {
+                    return None;
+                }
+                let mut v = ann.clone();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("age_ms".into(), json!(age));
+                }
+                Some(v)
+            })
             .collect()
     }
 
@@ -393,12 +409,31 @@ mod tests {
         );
         b.announce("keyB".into(), json!({"pubkey":"keyB","name":"bob"}), 1_000);
         assert_eq!(b.roster(1_000).len(), 2);
-        assert_eq!(b.roster(1_000 + ROSTER_TTL_MS - 1).len(), 2, "within TTL");
         assert_eq!(
-            b.roster(1_000 + ROSTER_TTL_MS + 1).len(),
-            0,
-            "expired past TTL"
+            b.roster(1_000 + AWAY_RETAIN_MS - 1).len(),
+            2,
+            "retained within the away window"
         );
+        assert_eq!(
+            b.roster(1_000 + AWAY_RETAIN_MS + 1).len(),
+            0,
+            "dropped past the retention bound"
+        );
+    }
+
+    #[test]
+    fn roster_stamps_age_ms() {
+        let b = broker(8);
+        b.announce(
+            "keyA".into(),
+            json!({"pubkey":"keyA","name":"alice"}),
+            1_000,
+        );
+        let r = b.roster(1_000 + 5_000);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0]["age_ms"], json!(5_000u64), "age since last refresh");
+        // signed fields untouched
+        assert_eq!(r[0]["pubkey"], json!("keyA"));
     }
 
     #[test]

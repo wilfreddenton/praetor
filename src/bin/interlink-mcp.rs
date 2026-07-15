@@ -52,6 +52,13 @@ const HISTORY_DEFAULT: usize = 20;
 /// Cap on pending pairing entries in each direction (bounds a knock flood).
 const PAIR_CAP: usize = 64;
 
+/// A session whose last heartbeat is within this window is **live**; beyond it, **away**
+/// (silent — probably asleep). The bus retains an away session far longer
+/// (`AWAY_RETAIN_MS`), so it stays addressable across a sleep. See `docs/PRESENCE.md`.
+const LIVE_MS: u64 = 90_000;
+/// An away session older than this reads as *probably gone* rather than merely napping.
+const AWAY_STALE_MS: u64 = 24 * 60 * 60 * 1_000; // 1 day
+
 #[derive(Parser)]
 #[command(about = "Per-agent channel server for Claude Code")]
 struct Cli {
@@ -398,7 +405,7 @@ impl Agent {
         // never address itself: route_session already excludes our own session, and
         // an explicit self-target is rejected here.
         let my_session = self.inner.session.read().unwrap().session_id.clone();
-        let session_id = match args.session.as_deref().map(str::trim) {
+        let (session_id, presence) = match args.session.as_deref().map(str::trim) {
             Some(s) if !s.is_empty() => {
                 if to_self && s == my_session {
                     return Err(McpError::invalid_params(
@@ -455,8 +462,37 @@ impl Agent {
             (Some(t), None) => format!(" [task {t}]"),
             _ => String::new(),
         };
+        // Honest send-time feedback keyed on the target's presence (see docs/PRESENCE.md).
+        let note = match presence {
+            Presence::Live => "delivering in the background".to_string(),
+            Presence::Away {
+                age_ms,
+                live_sibling,
+            } => {
+                let mut s = if age_ms >= AWAY_STALE_MS {
+                    format!(
+                        "that session is away and last seen {} ago, so it may be gone rather than asleep — run discover",
+                        ago(age_ms)
+                    )
+                } else {
+                    format!(
+                        "that session is away (asleep? last seen {} ago); it'll deliver when it wakes",
+                        ago(age_ms)
+                    )
+                };
+                if let Some(live) = live_sibling {
+                    s.push_str(&format!(
+                        " (a live sibling exists — pass session={live} to reach it now)"
+                    ));
+                }
+                s
+            }
+            Presence::Gone => "that session isn't on the roster (closed or long-dead), so it may \
+                               not deliver — run discover"
+                .to_string(),
+        };
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "queued for {dest} (msg_id {msg_id}){tag}; delivering in the background"
+            "queued for {dest} (msg_id {msg_id}){tag} — {note}"
         ))]))
     }
 
@@ -478,7 +514,7 @@ impl Agent {
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         // Route to a live session, same as send_message — the bare-key inbox is not
         // polled by anyone, so a cancel must target `key#session_id` too.
-        let session_id = self.route_session(to, &args.to).await?;
+        let (session_id, _) = self.route_session(to, &args.to).await?;
         let msg_id = new_msg_id();
         let ts = interlink::now_ms();
         let text = args
@@ -660,10 +696,16 @@ impl Agent {
                 };
                 let mut block = format!("{} ({fp}…){tagstr}\n    key: {}", g.name, g.key);
                 for s in &g.sessions {
-                    // Flag our own session so the operator doesn't try to reach it.
-                    let mine = g.key == me && s.session_id == my_session;
-                    let suffix = if mine { "  ← this session" } else { "" };
-                    block.push_str(&format!("\n    → {}{suffix}", session_line(s)));
+                    // Flag our own session so the operator doesn't try to reach it, and
+                    // mark away (silent) sessions so live vs. asleep is visible.
+                    let suffix = if g.key == me && s.info.session_id == my_session {
+                        "  ← this session".to_string()
+                    } else if s.is_live() {
+                        String::new()
+                    } else {
+                        format!("  (away · last seen {})", ago(s.age_ms))
+                    };
+                    block.push_str(&format!("\n    → {}{suffix}", session_line(&s.info)));
                 }
                 block
             })
@@ -740,7 +782,7 @@ impl Agent {
         );
         // So their accept can route back to this exact session.
         msg.reply_to = Some(self.inner.my_route());
-        let to_key = Route::new(&target_key, &session.session_id).to_string();
+        let to_key = Route::new(&target_key, &session.info.session_id).to_string();
         self.inner
             .post_send(&to_key, &msg)
             .await
@@ -806,7 +848,7 @@ impl Agent {
                     MessageKind::PairAccept,
                 );
                 msg.reply_to = Some(self.inner.my_route());
-                let to_key = Route::new(&key, &session.session_id).to_string();
+                let to_key = Route::new(&key, &session.info.session_id).to_string();
                 if let Err(e) = self.inner.post_send(&to_key, &msg).await {
                     tracing::warn!("pair_accept send failed (peer may not learn): {e}");
                 }
@@ -903,13 +945,56 @@ impl Agent {
     }
 }
 
-/// One identity on the roster with its live sessions — the grouped shape the
+/// A roster session tagged with how long since its last heartbeat, so callers can tell
+/// **live** (fresh) from **away** (silent — probably asleep). See `docs/PRESENCE.md`.
+struct LiveSession {
+    info: SessionInfo,
+    age_ms: u64,
+}
+
+impl LiveSession {
+    fn is_live(&self) -> bool {
+        self.age_ms < LIVE_MS
+    }
+}
+
+/// How reachable a routed session is, for honest send-time feedback.
+enum Presence {
+    /// Fresh heartbeat — delivering now.
+    Live,
+    /// Silent but retained — probably asleep; it'll deliver on wake. Carries a live
+    /// sibling of the same identity, if any, so the caller can offer it as an option.
+    Away {
+        age_ms: u64,
+        live_sibling: Option<String>,
+    },
+    /// Not on the roster (closed or long-dead) — may never be read.
+    Gone,
+}
+
+/// Classify a chosen session as live/away, tagging an away one with a live sibling (if
+/// any) so the caller can offer it as an alternative.
+fn presence_of(s: &LiveSession, siblings: &[LiveSession]) -> Presence {
+    if s.is_live() {
+        Presence::Live
+    } else {
+        Presence::Away {
+            age_ms: s.age_ms,
+            live_sibling: siblings
+                .iter()
+                .find(|o| o.is_live())
+                .map(|o| o.info.session_id.clone()),
+        }
+    }
+}
+
+/// One identity on the roster with its sessions (live + away) — the grouped shape the
 /// discovery tools work in. `key` is the base64 public key; `name` is the (verified)
 /// self-claimed roster name.
 struct NodeGroup {
     key: String,
     name: String,
-    sessions: Vec<SessionInfo>,
+    sessions: Vec<LiveSession>,
 }
 
 /// Group verified announcements by identity, preserving first-seen order.
@@ -928,7 +1013,10 @@ fn group_by_identity(anns: Vec<Announcement>) -> Vec<NodeGroup> {
             }
         });
         if !ann.session.session_id.is_empty() {
-            group.sessions.push(ann.session);
+            group.sessions.push(LiveSession {
+                info: ann.session,
+                age_ms: ann.age_ms.unwrap_or(0),
+            });
         }
     }
     order
@@ -990,8 +1078,8 @@ impl Agent {
         }
     }
 
-    /// A peer's live sessions from the roster.
-    async fn peer_sessions(&self, peer: AgentId) -> Vec<SessionInfo> {
+    /// A peer's sessions from the roster (live + away), each tagged with its age.
+    async fn peer_sessions(&self, peer: AgentId) -> Vec<LiveSession> {
         let key = peer.to_b64();
         group_by_identity(self.verified_roster().await)
             .into_iter()
@@ -1000,55 +1088,59 @@ impl Agent {
             .unwrap_or_default()
     }
 
-    /// Resolve a caller-supplied `session` hint to a full live session id. Session ids
-    /// are UUIDs now (they mirror Claude's `session_id`), but the model reliably passes
-    /// a short prefix (the old ids were 8 hex, and fingerprints are shown truncated), so
-    /// we match a hint that is an exact id *or* a unique prefix of one live session — a
-    /// truncated id would otherwise become a dead routing key and the message is lost.
-    /// A hint that matches no live session is used verbatim (the peer may be offline and
-    /// addressed by its full id; the bus queues until it wakes as that id).
-    async fn resolve_session(&self, peer: AgentId, hint: &str) -> Result<String, McpError> {
+    /// Resolve a caller-supplied `session` hint to a full session id + its presence.
+    /// Session ids are UUIDs now (they mirror Claude's `session_id`), but the model
+    /// reliably passes a short prefix (the old ids were 8 hex, and fingerprints are
+    /// shown truncated), so we match a hint that is an exact id *or* a unique prefix of
+    /// one session — a truncated id would otherwise become a dead routing key and the
+    /// message is lost. A hint matching no session is used verbatim as `Gone` (the peer
+    /// may be offline and addressed by its full id; the bus queues until it returns).
+    async fn resolve_session(
+        &self,
+        peer: AgentId,
+        hint: &str,
+    ) -> Result<(String, Presence), McpError> {
         let sessions = self.peer_sessions(peer).await;
-        if sessions.iter().any(|s| s.session_id == hint) {
-            return Ok(hint.to_string());
+        if let Some(s) = sessions.iter().find(|s| s.info.session_id == hint) {
+            return Ok((hint.to_string(), presence_of(s, &sessions)));
         }
-        let matches: Vec<&SessionInfo> = sessions
+        let matches: Vec<&LiveSession> = sessions
             .iter()
-            .filter(|s| s.session_id.starts_with(hint))
+            .filter(|s| s.info.session_id.starts_with(hint))
             .collect();
         match matches.as_slice() {
-            [one] => Ok(one.session_id.clone()),
-            [] => Ok(hint.to_string()),
-            many => {
-                let list = many
-                    .iter()
-                    .map(|s| format!("  {}", session_line(s)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Err(McpError::invalid_params(
-                    format!(
-                        "session '{hint}' matches several live sessions — use the full id:\n{list}"
-                    ),
-                    None,
-                ))
-            }
+            [one] => Ok((one.info.session_id.clone(), presence_of(one, &sessions))),
+            [] => Ok((hint.to_string(), Presence::Gone)),
+            _ => Err(McpError::invalid_params(
+                format!(
+                    "session '{hint}' matches several sessions — use the full id:\n{}",
+                    session_list(&sessions)
+                ),
+                None,
+            )),
         }
     }
 
-    /// Which session to send to when the caller gave none. Prefer the sticky session
-    /// (the one the peer last replied from) if it's still live; else auto-route a
-    /// lone live session. If the sticky session is the *only* thing we know and the
-    /// peer shows no live sessions, still address it — the peer is likely asleep and
-    /// the bus queues until it wakes as the same id (sleep-heal). No sticky and no
-    /// live session, or several to choose from, is an error with the list to pick.
-    async fn route_session(&self, peer: AgentId, petname: &str) -> Result<String, McpError> {
+    /// Which session to send to when the caller gave none, plus its presence for honest
+    /// feedback. Prefer the **sticky** session (the one the peer last replied from) if
+    /// it's on the roster at all — live *or* away: an away session will wake and drain,
+    /// so we keep the conversation pinned rather than redirecting to a sibling. If the
+    /// sticky is gone (or there is none), auto-route the lone **live** session; a lone
+    /// away session is used too (it'll wake on the message). Several to choose from is an
+    /// error with the list; nothing live and a gone sticky is queued speculatively
+    /// (`Presence::Gone`) for a possible sleep-heal. See `docs/PRESENCE.md`.
+    async fn route_session(
+        &self,
+        peer: AgentId,
+        petname: &str,
+    ) -> Result<(String, Presence), McpError> {
         let mut sessions = self.peer_sessions(peer).await;
         let is_self = peer == self.inner.key.id();
         // A session never routes to itself: drop our own from the candidates when
         // the target is our own identity (a `to:"self"` fan-out to a sibling).
         if is_self {
             let my_session = self.inner.session.read().unwrap().session_id.clone();
-            sessions.retain(|s| s.session_id != my_session);
+            sessions.retain(|s| s.info.session_id != my_session);
         }
         let sticky = self
             .inner
@@ -1057,39 +1149,59 @@ impl Agent {
             .unwrap()
             .get(&peer.to_b64())
             .cloned();
-        if let Some(sid) = &sticky {
-            if sessions.iter().any(|s| &s.session_id == sid) {
-                return Ok(sid.clone()); // sticky session still live — pin to it
-            }
-            if sessions.is_empty() {
-                return Ok(sid.clone()); // peer offline; queue for the sleep-heal
-            }
-            // sticky is stale but the peer has other live sessions → fall through
-            // and re-pick.
+        // Sticky on the roster (live OR away) → keep the conversation pinned to it.
+        if let Some(sid) = &sticky
+            && let Some(s) = sessions.iter().find(|s| &s.info.session_id == sid)
+        {
+            return Ok((sid.clone(), presence_of(s, &sessions)));
         }
+        // No usable sticky (or it's gone): prefer a lone live session.
+        let live: Vec<&LiveSession> = sessions.iter().filter(|s| s.is_live()).collect();
+        if live.len() == 1 {
+            return Ok((live[0].info.session_id.clone(), Presence::Live));
+        }
+        if live.len() > 1 {
+            return Err(McpError::invalid_params(
+                format!(
+                    "'{petname}' has several live sessions — pass session=<id>:\n{}",
+                    session_list(&sessions)
+                ),
+                None,
+            ));
+        }
+        // Zero live sessions.
         match sessions.len() {
-            1 => Ok(sessions.pop().unwrap().session_id),
+            1 => {
+                let s = &sessions[0];
+                Ok((
+                    s.info.session_id.clone(),
+                    Presence::Away {
+                        age_ms: s.age_ms,
+                        live_sibling: None,
+                    },
+                ))
+            }
             0 if is_self => Err(McpError::invalid_params(
                 "no other live session on this machine to reach".to_string(),
                 None,
             )),
-            0 => Err(McpError::invalid_params(
+            // Gone sticky, peer fully offline → queue speculatively for a sleep-heal.
+            0 => match sticky {
+                Some(sid) => Ok((sid, Presence::Gone)),
+                None => Err(McpError::invalid_params(
+                    format!(
+                        "no live session for '{petname}' on the roster — they may be offline (run discover)"
+                    ),
+                    None,
+                )),
+            },
+            _ => Err(McpError::invalid_params(
                 format!(
-                    "no live session for '{petname}' on the roster — they may be offline (run discover)"
+                    "'{petname}' has several sessions (all away) — pass session=<id>:\n{}",
+                    session_list(&sessions)
                 ),
                 None,
             )),
-            _ => {
-                let list = sessions
-                    .iter()
-                    .map(|s| format!("  {}", session_line(s)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Err(McpError::invalid_params(
-                    format!("'{petname}' has several live sessions — pass session=<id>:\n{list}"),
-                    None,
-                ))
-            }
         }
     }
 }
@@ -1483,6 +1595,36 @@ fn session_line(s: &SessionInfo) -> String {
     parts.join(" · ")
 }
 
+/// A pick-list of sessions, each tagged live/away — for the "pass session=<id>" errors.
+fn session_list(sessions: &[LiveSession]) -> String {
+    sessions
+        .iter()
+        .map(|s| {
+            let state = if s.is_live() {
+                String::new()
+            } else {
+                format!(" (away, last seen {})", ago(s.age_ms))
+            };
+            format!("  {}{state}", session_line(&s.info))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Human-friendly "how long ago" for a heartbeat age.
+fn ago(age_ms: u64) -> String {
+    let s = age_ms / 1_000;
+    if s < 90 {
+        format!("{s}s")
+    } else if s < 90 * 60 {
+        format!("{}m", s / 60)
+    } else if s < 48 * 3_600 {
+        format!("{}h", s / 3_600)
+    } else {
+        format!("{} days", s / 86_400)
+    }
+}
+
 /// Publish this session's signed presence to every relay, once. Best-effort.
 async fn announce_now(inner: &Arc<Inner>) {
     let ann = {
@@ -1499,6 +1641,46 @@ async fn announce_now(inner: &Arc<Inner>) {
             .timeout(Duration::from_secs(10))
             .send()
             .await;
+    }
+}
+
+/// Best-effort "I'm closing" to every peer we were actively chatting with (the sticky
+/// map), on graceful shutdown — so an idle partner is told the session is gone rather
+/// than only discovering it lazily on its next send. It's a normal signed message; the
+/// partner's routing self-corrects anyway once our presence is unregistered (a gone
+/// sticky re-picks), so this is the proactive notification, not a correctness
+/// requirement. Sequential and caller-bounded; a hard kill skips it. See
+/// `docs/PRESENCE.md`.
+async fn send_goodbyes(inner: &Arc<Inner>) {
+    let peers: Vec<(String, String)> = {
+        let sticky = inner.sticky.read().unwrap();
+        sticky.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    if peers.is_empty() {
+        return;
+    }
+    let my_id = inner.session.read().unwrap().session_id.clone();
+    let text = format!(
+        "[interlink] I'm ending this session ({my_id}) — goodbye. If you were waiting on \
+         me, stop; re-check discover before resuming."
+    );
+    for (peer_b64, their_session) in peers {
+        let Ok(to) = AgentId::from_b64(&peer_b64) else {
+            continue;
+        };
+        let mut msg = inner.key.sign_full(
+            to,
+            &text,
+            interlink::now_ms(),
+            &new_msg_id(),
+            MessageKind::Message,
+            None,
+            None,
+            None,
+        );
+        msg.reply_to = Some(inner.my_route());
+        let to_key = Route::new(&peer_b64, &their_session).to_string();
+        let _ = inner.post_send(&to_key, &msg).await;
     }
 }
 
@@ -1977,12 +2159,15 @@ async fn main() -> Result<()> {
     }
 
     // The service ends when Claude closes the session (stdin EOF) or on a signal.
-    // Either way, drop our presence so a peer learns the session is really gone and
-    // re-picks, rather than waiting out the roster TTL.
+    // Either way, tell active chat partners we're leaving, then drop our presence so a
+    // peer learns the session is really gone and re-picks, rather than waiting out the
+    // roster TTL. Both are best-effort — a hard kill skips them (TTL is the backstop).
     tokio::select! {
         r = service.waiting() => { r?; }
         _ = shutdown_signal() => { tracing::info!("shutdown signal; unregistering"); }
     }
+    // Bounded so a slow/unreachable bus can't hang shutdown past Claude's SIGKILL window.
+    let _ = tokio::time::timeout(Duration::from_secs(3), send_goodbyes(&inner)).await;
     unregister_now(&inner).await;
     Ok(())
 }
@@ -2003,5 +2188,62 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sess(id: &str, age_ms: u64) -> LiveSession {
+        LiveSession {
+            info: SessionInfo {
+                session_id: id.into(),
+                ..Default::default()
+            },
+            age_ms,
+        }
+    }
+
+    #[test]
+    fn live_vs_away_threshold() {
+        assert!(sess("a", 0).is_live());
+        assert!(sess("a", LIVE_MS - 1).is_live());
+        assert!(
+            !sess("a", LIVE_MS).is_live(),
+            "exactly at the bound is away"
+        );
+        assert!(!sess("a", LIVE_MS + 1).is_live());
+    }
+
+    #[test]
+    fn presence_of_classifies_and_finds_live_sibling() {
+        let sessions = vec![sess("sib", 10), sess("napping", LIVE_MS + 1_000)];
+        // a live session → Live
+        assert!(matches!(
+            presence_of(&sessions[0], &sessions),
+            Presence::Live
+        ));
+        // an away session with a live sibling → Away carrying the sibling id
+        match presence_of(&sessions[1], &sessions) {
+            Presence::Away { live_sibling, .. } => {
+                assert_eq!(live_sibling.as_deref(), Some("sib"))
+            }
+            _ => panic!("expected Away"),
+        }
+        // an away session with no live sibling → Away, no sibling
+        let only_away = vec![sess("x", LIVE_MS + 1)];
+        match presence_of(&only_away[0], &only_away) {
+            Presence::Away { live_sibling, .. } => assert_eq!(live_sibling, None),
+            _ => panic!("expected Away"),
+        }
+    }
+
+    #[test]
+    fn ago_is_human_friendly() {
+        assert_eq!(ago(5_000), "5s");
+        assert_eq!(ago(120_000), "2m");
+        assert_eq!(ago(3 * 3_600_000), "3h");
+        assert_eq!(ago(3 * 86_400_000), "3 days");
     }
 }
